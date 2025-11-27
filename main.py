@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Dict, Optional, Any, List
 import uvicorn
 import requests
+from sodapy import Socrata
 import json
 import pandas as pd
 from datetime import datetime
@@ -63,57 +64,29 @@ def obtener_metadatos_socrata(dataset_id: str) -> Dict:
 
 def obtener_todos_los_datos_socrata(dataset_id: str, limit: int = 50000) -> pd.DataFrame:
     """Obtiene todos los datos del dataset usando paginación"""
-    base_url = f"https://www.datos.gov.co/resource/{dataset_id}.json"
-    
-    print(f"🔗 Obteniendo datos desde: {base_url}")
+    # Use sodapy Socrata client for faster and robust retrieval
+    print(f"🔗 Obteniendo datos (sodapy) para dataset: {dataset_id}")
     print(f"📦 Límite configurado: {limit} registros")
-    
-    all_data = []
-    offset = 0
-    page_size = 1000  # Máximo por página en Socrata
-    total_obtained = 0
-    
     try:
-        while offset < limit:
-            url = f"{base_url}?$limit={page_size}&$offset={offset}"
-            print(f"📄 Solicitando página: offset={offset}, limit={page_size}")
-            
-            response = requests.get(url)
-            if response.status_code == 200:
-                page_data = response.json()
-                records_in_page = len(page_data)
-                all_data.extend(page_data)
-                total_obtained += records_in_page
-                
-                print(f"✅ Página obtenida: {records_in_page} registros")
-                
-                # Si obtenemos menos registros que el page_size, es la última página
-                if records_in_page < page_size:
-                    print(f"🏁 Última página alcanzada. Total: {total_obtained} registros")
-                    break
-                
-                offset += page_size
-                
-                # Pequeña pausa para no saturar la API
-                import time
-                time.sleep(0.1)
-                
-            else:
-                print(f"❌ Error en página {offset}: {response.status_code}")
-                break
-                
-        print(f"🎯 Total de registros obtenidos: {len(all_data)}")
-        
-        if all_data:
-            df = pd.DataFrame(all_data)
+        # You can override credentials via env variables if desired
+        client = Socrata(
+            "www.datos.gov.co",
+            "sAmoC9S1twqLnpX9YUmmSTqgp",
+            username="valen@yopmail.com",
+            password="p4wHD7Y.SDGiQmP",
+        )
+
+        results = client.get(dataset_id, limit=limit)
+        print(f"🎯 Registros obtenidos (sodapy): {len(results)}")
+        if results:
+            df = pd.DataFrame.from_records(results)
             print(f"📊 DataFrame creado: {len(df)} filas, {len(df.columns)} columnas")
             return df
         else:
             print("⚠️ No se obtuvieron datos")
             return pd.DataFrame()
-            
     except Exception as e:
-        print(f"❌ Error obteniendo datos: {e}")
+        print(f"❌ Error obteniendo datos con sodapy: {e}")
         return pd.DataFrame()
 
 
@@ -362,6 +335,71 @@ async def get_confidencialidad(dataset_id: Optional[str] = None) -> ScoreRespons
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/accesibilidad")
+async def get_accesibilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Accesibilidad usando SOLO metadata.
+
+    Parámetros:
+        dataset_id: ID del dataset (debe coincidir con el inicializado)
+
+    Retorna:
+        ScoreResponse(score=float, details=dict)
+    """
+    if calculator is None:
+        raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first.")
+
+    if dataset_id is None:
+        dataset_id = calculator.dataset_id
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator.dataset_id != dataset_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset mismatch. Initialized: {calculator.dataset_id}, Requested: {dataset_id}"
+            )
+
+    try:
+        print(f"📊 Calculando accesibilidad (metadata-only) para dataset: {dataset_id}")
+        print("🛈 Metadata usada:")
+        try:
+            print(json.dumps(calculator.metadata, indent=2, ensure_ascii=False))
+        except Exception:
+            print(calculator.metadata)
+
+        score = calculator.calculate_accesibilidad_from_metadata(calculator.metadata, verbose=False)
+
+        # Reconstruir detalles basados en la misma lógica
+        tags = calculator.metadata.get('tags') or []
+        links = [
+            calculator.metadata.get('attributionLink'),
+            calculator.metadata.get('metadata', {}).get('custom_fields', {}).get('Información de Datos', {}).get('URL Documentación'),
+            calculator.metadata.get('metadata', {}).get('custom_fields', {}).get('Información de Datos', {}).get('URL Normativa')
+        ]
+        links_found = [l for l in links if l]
+
+        details = {
+            'accesibilidad': float(score),
+            'puntaje_tags': 5.0 if len(tags) > 0 else 0.0,
+            'puntaje_link': 5.0 if len(links_found) > 0 else 0.0,
+            'tags_count': len(tags),
+            'links_found': links_found
+        }
+
+        if len(tags) > 0:
+            print(f"  ✓ tags_count: {len(tags)}")
+        else:
+            print("  - No se encontraron tags")
+        if links_found:
+            print(f"  ✓ links encontrados: {links_found}")
+        else:
+            print("  - No se encontraron links relevantes")
+
+        return ScoreResponse(score=round(float(score), 2), details=details)
+    except Exception as e:
+        print(f"❌ Error calculando accesibilidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/completitud")
 async def get_completitud(dataset_id: Optional[str] = None) -> ScoreResponse:
     """Calcula la métrica de Completitud del dataset.
@@ -447,6 +485,70 @@ async def get_completitud(dataset_id: Optional[str] = None) -> ScoreResponse:
         print(f"❌ Error calculando completitud: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/conformidad")
+async def get_conformidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Conformidad avanzada (0-1) usando metadata y datos.
+
+    - Soporta `dataset_id` on-demand (se obtienen metadatos si no existe calculator inicializado)
+    - Si se detectan columnas relevantes y no hay datos cargados, intenta cargar un muestreo (limit 5000)
+    - Retorna score entre 0-1. Si no hay columnas relevantes o no hay datos válidos, retorna score=0 y detalles.
+    """
+    metadata_to_use = None
+
+    # Determine metadata source (fallback like /unicidad)
+    if dataset_id is None:
+        if calculator is None:
+            raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first or provide dataset_id")
+        dataset_id = calculator.dataset_id
+        metadata_to_use = calculator.metadata
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator is not None and calculator.dataset_id == dataset_id:
+            metadata_to_use = calculator.metadata
+        else:
+            print(f"ℹ️ Obteniendo metadatos en línea para dataset_id={dataset_id}")
+            fetched = obtener_metadatos_socrata(dataset_id)
+            if not fetched:
+                raise HTTPException(status_code=404, detail=f"Metadata not found for dataset_id={dataset_id}")
+            metadata_to_use = fetched
+
+    try:
+        print(f"📊 Calculando conformidad para dataset: {dataset_id}")
+
+        # Use existing calculator if matches and has data, otherwise create temporary
+        use_calc = None
+        if calculator is not None and calculator.dataset_id == dataset_id:
+            use_calc = calculator
+        else:
+            use_calc = DataQualityCalculator(dataset_id, metadata_to_use)
+
+        # Detect relevant columns; if there are and no data loaded, try to load a sample
+        detected = use_calc._detect_relevant_columns(metadata_to_use)
+        any_found = any(len(v) > 0 for v in detected.values())
+
+        if any_found and (getattr(use_calc, 'df', None) is None or len(use_calc.df) == 0):
+            print("ℹ️ Columnas relevantes detectadas y no hay datos cargados -> intentando cargar muestra (5000)")
+            try:
+                await use_calc.load_data(limit=5000)
+            except Exception as e:
+                print(f"⚠️ No se pudieron cargar datos para validación: {e}")
+
+        score = use_calc.calculate_conformidad_from_metadata_and_data(metadata_to_use, verbose=True)
+
+        if score is None:
+            details = {'message': 'No relevant columns detected or no valid data to validate.'}
+            return ScoreResponse(score=0.0, details=details)
+
+        # Build details from cache if available
+        cached = getattr(use_calc, 'cached_scores', {}).get('conformidad_advanced')
+        details = cached['details'] if cached else None
+
+        return ScoreResponse(score=round(float(score), 4), details=details)
+    except Exception as e:
+        print(f"❌ Error calculando conformidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/unicidad")
 async def get_unicidad(dataset_id: Optional[str] = None, nivel_riesgo: Optional[float] = 1.5) -> ScoreResponse:
     """Calcula la métrica de Unicidad del dataset (duplicados).
@@ -472,31 +574,41 @@ async def get_unicidad(dataset_id: Optional[str] = None, nivel_riesgo: Optional[
     Retorna:
         score: float entre 0-10 (10 = sin duplicados, 0 = muchos duplicados)
     """
-    if calculator is None:
-        raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first.")
-    
-    # Backwards-compatible behavior: if dataset_id not provided, use initialized dataset_id
+    metadata_to_use = None
+
+    # Determine metadata source
     if dataset_id is None:
+        # No dataset_id provided: require initialized calculator
+        if calculator is None:
+            raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first or provide dataset_id")
         dataset_id = calculator.dataset_id
+        metadata_to_use = calculator.metadata
         print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
     else:
-        if calculator.dataset_id != dataset_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Dataset mismatch. Initialized: {calculator.dataset_id}, Requested: {dataset_id}"
-            )
-    
-    # Validar que los datos estén cargados
-    if calculator.df is None or len(calculator.df) == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Full data not loaded. Call POST /load_data first to fetch dataset records."
-        )
-    
+        # If calculator exists and matches, use its metadata
+        if calculator is not None and calculator.dataset_id == dataset_id:
+            metadata_to_use = calculator.metadata
+        else:
+            # Try to fetch metadata on-demand for the provided dataset_id
+            print(f"ℹ️ Obteniendo metadatos en línea para dataset_id={dataset_id}")
+            fetched = obtener_metadatos_socrata(dataset_id)
+            if not fetched:
+                raise HTTPException(status_code=404, detail=f"Metadata not found for dataset_id={dataset_id}")
+            metadata_to_use = fetched
+
     try:
         print(f"📊 Calculando unicidad para dataset: {dataset_id}")
         print(f"   Nivel de riesgo: {nivel_riesgo}")
-        score = calculator.calculate_unicidad(nivel_riesgo=nivel_riesgo)
+
+        # If we have an initialized calculator with data for this dataset, use it; otherwise
+        # create a temporary calculator that only holds metadata (note: unicidad needs data,
+        # so the temp calculator will return a neutral value if no data is present).
+        if calculator is not None and calculator.dataset_id == dataset_id and getattr(calculator, 'df', None) is not None and len(calculator.df) > 0:
+            score = calculator.calculate_unicidad(nivel_riesgo=nivel_riesgo)
+        else:
+            temp_calc = DataQualityCalculator(dataset_id, metadata_to_use)
+            score = temp_calc.calculate_unicidad(nivel_riesgo=nivel_riesgo)
+
         print(f"📈 Métrica de Unicidad calculada: {score}")
         return ScoreResponse(score=round(float(score), 2))
     except Exception as e:

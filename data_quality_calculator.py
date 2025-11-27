@@ -7,6 +7,7 @@ import re
 import json
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sodapy import Socrata
 import math
 
 class DataQualityCalculator:
@@ -21,6 +22,19 @@ class DataQualityCalculator:
         self.df_columnas = 0
         self.df_filas = 0
         self.cached_scores = {}
+        # Cache para llamadas a API Colombia (departments/municipalities)
+        self._api_colombia_cache = {
+            'departments': None,
+            'municipalities': None
+        }
+        # Lista de respaldo de departamentos (en caso de fallo de la API)
+        self._colombia_departments_backup = [
+            'Amazonas','Antioquia','Arauca','Atlántico','Bogotá D.C.','Bolívar','Boyacá','Caldas',
+            'Caquetá','Casanare','Cauca','Cesar','Chocó','Córdoba','Cundinamarca','Guainía',
+            'Guaviare','Huila','La Guajira','Magdalena','Meta','Nariño','Norte de Santander',
+            'Putumayo','Quindío','Risaralda','San Andrés y Providencia','Santander','Sucre',
+            'Tolima','Valle del Cauca','Vaupés','Vichada'
+        ]
 
     async def load_data(self, limit: int = 50000) -> None:
         """
@@ -46,7 +60,42 @@ class DataQualityCalculator:
         total_obtained = 0
         
         try:
-            import time
+            client = Socrata(
+                "www.datos.gov.co",
+                "sAmoC9S1twqLnpX9YUmmSTqgp",
+                username="valen@yopmail.com",
+                password="p4wHD7Y.SDGiQmP",
+            )
+
+            results = client.get(self.dataset_id, limit=limit)
+            print(f"🎯 Registros obtenidos (sodapy): {len(results)}")
+
+            if results:
+                df = pd.DataFrame.from_records(results)
+                # set dataframe and derived properties
+                self.df = df
+                self.df_filas = len(df)
+                self.df_columnas = len(df.columns)
+                # Try to optimize dtypes if helper exists
+                try:
+                    self._optimize_dtypes()
+                except Exception:
+                    pass
+
+                print(f"📊 DataFrame cargado en calculador: {self.df_filas} filas, {self.df_columnas} columnas")
+                return
+            else:
+                print("⚠️ No se obtuvieron datos desde Socrata (sodapy)")
+                self.df = pd.DataFrame()
+                self.df_filas = 0
+                self.df_columnas = 0
+                return
+        except Exception as e:
+            print(f"❌ Error cargando datos con sodapy: {e}")
+            self.df = pd.DataFrame()
+            self.df_filas = 0
+            self.df_columnas = 0
+            return
             while offset < limit:
                 url = f"{base_url}?$limit={page_size}&$offset={offset}"
                 print(f"📄 Solicitando página: offset={offset}, limit={page_size}")
@@ -370,6 +419,57 @@ class DataQualityCalculator:
 
         return max(0, min(10, confidencialidad))
 
+    def calculate_accesibilidad_from_metadata(self, metadata: Optional[Dict] = None, verbose: bool = True) -> float:
+        """
+        Calcula la métrica de Accesibilidad usando SOLO metadatos.
+
+        Reglas implementadas (Guía MinTIC 2025 simplificada):
+        - puntaje_tags = 5 si hay al menos 1 tag, 0 si no
+        - puntaje_link = 5 si se encuentra al menos 1 link de atribución / documentación / normativa
+        - accesibilidad = puntaje_tags + puntaje_link (max 10)
+
+        Args:
+            metadata: Diccionario con metadatos (opcional)
+            verbose: Si True, imprime metadata y detalles
+
+        Returns:
+            float: score entre 0 y 10
+        """
+        metadata = metadata or self.metadata or {}
+
+        if verbose:
+            print("\n=== DEBUG ACCESIBILIDAD (METADATA) ===")
+            print("Metadata recibida para accesibilidad:")
+            try:
+                print(json.dumps(metadata, indent=2, ensure_ascii=False))
+            except Exception:
+                print(metadata)
+
+        # Puntaje tags
+        tags = metadata.get('tags') or []
+        puntaje_tags = 5.0 if len(tags) > 0 else 0.0
+
+        # Buscar links relevantes
+        links = [
+            metadata.get('attributionLink'),
+            # Algunas APIs embeben info en metadata.custom_fields.*
+            metadata.get('metadata', {}).get('custom_fields', {}).get('Información de Datos', {}).get('URL Documentación'),
+            metadata.get('metadata', {}).get('custom_fields', {}).get('Información de Datos', {}).get('URL Normativa')
+        ]
+        # Normalizar None/''
+        links_found = [l for l in links if l]
+        puntaje_link = 5.0 if len(links_found) > 0 else 0.0
+
+        accesibilidad = puntaje_tags + puntaje_link
+        accesibilidad = max(0, min(10, accesibilidad))
+
+        if verbose:
+            print(f"  ✓ tags_count: {len(tags)} -> puntaje_tags={puntaje_tags}")
+            print(f"  ✓ links_found: {links_found} -> puntaje_link={puntaje_link}")
+            print(f"  → accesibilidad (raw) = {accesibilidad}")
+
+        return float(accesibilidad)
+
 
     def calculate_confidencialidad_from_metadata(self, metadata: Optional[Dict] = None, verbose: bool = True) -> float:
         """
@@ -552,6 +652,392 @@ class DataQualityCalculator:
         conformidad = 10 * math.exp(-5 * proporcion_errores)
 
         return max(0, min(10, conformidad))
+
+    def _fetch_colombia_departments(self) -> List[str]:
+        """
+        Obtiene y cachea la lista de departamentos desde la API Colombia.
+        Si falla, retorna la lista de respaldo.
+        """
+        if self._api_colombia_cache.get('departments'):
+            print("ℹ️ Usando cache local de departamentos (API Colombia)")
+            return self._api_colombia_cache['departments']
+
+        url = 'https://api-colombia.com/api/v1/Department'
+        try:
+            print(f"🔗 Consultando API Colombia departamentos: {url}")
+            resp = requests.get(url, timeout=6)
+            if resp.status_code == 200:
+                data = resp.json()
+                names = []
+                if isinstance(data, list):
+                    for item in data:
+                        # intentar campos comunes
+                        name = item.get('name') or item.get('department') or item.get('nombre')
+                        if name:
+                            names.append(str(name).strip().title())
+                # deduplicate and cache
+                names = sorted(list(set(names)))
+                if names:
+                    print(f"✅ API Colombia devolvió {len(names)} departamentos (cacheados)")
+                    self._api_colombia_cache['departments'] = names
+                    return names
+                else:
+                    print("⚠️ API Colombia devolvió lista vacía de departamentos")
+        except Exception as e:
+            print(f"⚠️ Error llamando API Colombia departamentos: {e}")
+
+        # fallback
+        backup = [d.title() for d in self._colombia_departments_backup]
+        print(f"🔁 Usando fallback local de departamentos ({len(backup)} entradas)")
+        self._api_colombia_cache['departments'] = backup
+        return backup
+
+    # def _fetch_colombia_municipalities(self) -> Optional[set]:
+    #     """
+    #     Intenta obtener municipios desde la API (si está disponible).
+    #     Devuelve un set de nombres normalizados o None si no es posible.
+    #     """
+    #     if self._api_colombia_cache.get('municipalities') is not None:
+    #         return self._api_colombia_cache['municipalities']
+
+    #     url = 'https://api-colombia.com/api/v1/Municipality'
+    #     try:
+    #         resp = requests.get(url, timeout=6)
+    #         if resp.status_code == 200:
+    #             data = resp.json()
+    #             names = set()
+    #             if isinstance(data, list):
+    #                 for item in data:
+    #                     name = item.get('name') or item.get('municipality') or item.get('nombre')
+    #                     if name:
+    #                         names.add(str(name).strip().title())
+    #             if names:
+    #                 self._api_colombia_cache['municipalities'] = names
+    #                 return names
+    #     except Exception:
+    #         pass
+
+    #     # If failed, store None to indicate unavailability
+    #     self._api_colombia_cache['municipalities'] = None
+    #     return None
+    def _fetch_colombia_municipalities(self) -> Optional[set]:
+        """
+        Intenta obtener municipios desde la API usando el endpoint por departamento.
+        Devuelve un set de nombres normalizados o None si no es posible.
+        """
+        if self._api_colombia_cache.get('municipalities') is not None:
+            print("ℹ️ Usando cache local de municipios (API Colombia)")
+            return self._api_colombia_cache['municipalities']
+
+        try:
+            # Cache de departamentos para reutilizar
+            if self._api_colombia_cache.get('departments') is None:
+                dept_url = 'https://api-colombia.com/api/v1/Department'
+                dept_resp = requests.get(dept_url, timeout=10)
+                
+                if dept_resp.status_code != 200:
+                    self._api_colombia_cache['municipalities'] = None
+                    return None
+
+                departamentos = dept_resp.json()
+                if not isinstance(departamentos, list):
+                    self._api_colombia_cache['municipalities'] = None
+                    return None
+                    
+                self._api_colombia_cache['departments'] = departamentos
+            else:
+                departamentos = self._api_colombia_cache['departments']
+
+            all_municipalities = set()
+            successful_depts = 0
+            
+            # Limitar a los primeros 10 departamentos para pruebas (opcional)
+            for dept in departamentos[:]:  # Remover [:] para todos los departamentos
+                dept_id = dept.get('id')
+                dept_name = dept.get('name', 'Desconocido')
+                
+                if not dept_id:
+                    continue
+                    
+                # Obtener municipios del departamento actual
+                mun_url = f'https://api-colombia.com/api/v1/Department/{dept_id}/cities'
+                try:
+                    mun_resp = requests.get(mun_url, timeout=6)
+                    if mun_resp.status_code == 200:
+                        municipios = mun_resp.json()
+                        if isinstance(municipios, list):
+                            mun_count = 0
+                            for municipio in municipios:
+                                name = municipio.get('name')
+                                if name:
+                                    all_municipalities.add(str(name).strip().title())
+                                    mun_count += 1
+                            
+                            successful_depts += 1
+                            print(f"  📍 {dept_name}: {mun_count} municipios")
+                    
+                except requests.exceptions.Timeout:
+                    print(f"⏰ Timeout en {dept_name}")
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Error en {dept_name}: {e}")
+                    continue
+
+            if all_municipalities:
+                print(f"✅ Obtenidos {len(all_municipalities)} municipios de {successful_depts}/{len(departamentos)} departamentos")
+                self._api_colombia_cache['municipalities'] = all_municipalities
+                return all_municipalities
+            else:
+                print("❌ No se pudieron obtener municipios")
+                self._api_colombia_cache['municipalities'] = None
+                return None
+
+        except Exception as e:
+            print(f"❌ Error crítico: {e}")
+            self._api_colombia_cache['municipalities'] = None
+            return None
+    def _detect_relevant_columns(self, metadata: Optional[Dict] = None) -> Dict[str, List[str]]:
+        """
+        Detecta columnas relevantes a partir de metadata o de self.df
+        Retorna un dict tipo -> lista de nombres de columnas encontradas
+        Tipos: departamento, municipio, año, latitud, longitud, correo
+        """
+        metadata = metadata or self.metadata or {}
+        detected = {'departamento': [], 'municipio': [], 'año': [], 'latitud': [], 'longitud': [], 'correo': []}
+
+        # Obtener lista de nombres desde metadata o desde df
+        cols = []
+        if metadata.get('columns'):
+            for c in metadata.get('columns'):
+                if isinstance(c, dict):
+                    name = c.get('name') or c.get('fieldName')
+                else:
+                    name = c
+                if name:
+                    cols.append(str(name))
+        if not cols and self.df is not None:
+            cols = [str(c) for c in self.df.columns]
+
+        patterns = {
+            'departamento': ['departamento', 'depto', 'department', 'departament'],
+            'municipio': ['municipio', 'ciudad', 'city', 'municipality'],
+            'año': ['año', 'year', 'anio', 'ano'],
+            'latitud': ['latitud', 'latitude', 'lat'],
+            'longitud': ['longitud', 'longitude', 'lon', 'long'],
+            'correo': ['correo', 'email', 'mail']
+        }
+
+        for col in cols:
+            col_lower = str(col).lower()
+            for key, pats in patterns.items():
+                for p in pats:
+                    if p in col_lower:
+                        detected[key].append(col)
+                        break
+
+        # deduplicate
+        for k in detected:
+            detected[k] = list(dict.fromkeys(detected[k]))
+
+        # Debug print de columnas detectadas
+        print("🔎 Columnas detectadas por tipo:")
+        for k, v in detected.items():
+            print(f"   - {k}: {v}")
+
+        return detected
+
+    def calculate_conformidad_from_metadata_and_data(self, metadata: Optional[Dict] = None, verbose: bool = True) -> Optional[float]:
+        """
+        Implementación avanzada de Conformidad según requerimientos.
+        Retorna score en rango 0-1 (math.exp(-5 * (errores/total_validos))).
+        Si no hay columnas relevantes o no hay datos validados, retorna None.
+        """
+        metadata = metadata or self.metadata or {}
+
+        if verbose:
+            print("\n=== DEBUG CONFORMIDAD AVANZADA ===")
+
+        # Mostrar resumen de metadata recibida (claves importantes)
+        if verbose:
+            try:
+                cols_meta = metadata.get('columns') or []
+                print(f"🛈 Metadata summary: name={metadata.get('name')}, id={metadata.get('id')}, columns_in_metadata={len(cols_meta)}")
+            except Exception:
+                print("🛈 Metadata summary: (no se pudo leer resumen)")
+
+        detected = self._detect_relevant_columns(metadata)
+        # Flatten detected columns list and check if any present
+        any_found = any(len(v) > 0 for v in detected.values())
+        if not any_found:
+            if verbose:
+                print("⚠️ No se detectaron columnas relevantes para conformidad")
+            return None
+
+        # Require data present
+        if self.df is None or len(self.df) == 0:
+            if verbose:
+                print("⚠️ No hay datos cargados para validar conformidad")
+            return None
+
+        # Fetch reference data (and print what we received)
+        departments_ref = set(self._fetch_colombia_departments())
+        print(f"📚 Referencia departamentos: {len(departments_ref)} items (ejemplo: {list(departments_ref)[:5]})")
+        municipalities_ref = self._fetch_colombia_municipalities()
+        if municipalities_ref is None:
+            print("📚 Referencia municipios: NO DISPONIBLE (se omitirá validación municipal)")
+        else:
+            print(f"📚 Referencia municipios: {len(municipalities_ref)} items (ejemplo: {list(municipalities_ref)[:5]})")
+
+        email_re = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
+
+        total_valids = 0
+        total_errors = 0
+        per_column = []
+
+        # Helper to normalize text
+        def normalize_title(v):
+            try:
+                return str(v).strip().title()
+            except Exception:
+                return str(v).strip()
+
+        # For each detected column type, validate values
+        for ctype, cols in detected.items():
+            for col in cols:
+                col_series = self.df.get(col)
+                if col_series is None:
+                    continue
+                # Print column diagnostics
+                try:
+                    dtype = str(col_series.dtype)
+                    non_null_mask = col_series.notna()
+                    col_values = col_series[non_null_mask]
+                    non_null_count = int(col_values.shape[0])
+                    unique_count = int(col_values.nunique(dropna=True))
+                    sample_vals = col_values.head(5).astype(str).tolist()
+                    try:
+                        top_counts = col_values.astype(str).value_counts().head(5).to_dict()
+                    except Exception:
+                        top_counts = {}
+                    print(f"\n➡ Validando columna='{col}' tipo_detectado={ctype} dtype={dtype} non_null={non_null_count} unique={unique_count}")
+                    print(f"   • Muestra head: {sample_vals}")
+                    print(f"   • Top valores: {top_counts}")
+                except Exception as e:
+                    print(f"⚠️ Error al obtener diagnosticos de columna {col}: {e}")
+
+                non_null_mask = col_series.notna()
+                col_values = col_series[non_null_mask]
+                total = int(col_values.shape[0])
+                errors = 0
+                bad_examples = []
+
+                if total == 0:
+                    # nothing to validate for this column
+                    per_column.append({'column': col, 'type': ctype, 'total': 0, 'errors': 0, 'examples': []})
+                    continue
+
+                if ctype == 'departamento':
+                    for v in col_values.astype(str):
+                        total_valids += 1
+                        nv = normalize_title(v)
+                        if nv not in departments_ref:
+                            errors += 1
+                            if len(bad_examples) < 5:
+                                bad_examples.append(v)
+
+                elif ctype == 'municipio':
+                    # Only validate if municipalities_ref available
+                    if municipalities_ref is None:
+                        # skip counting these rows as validated
+                        if verbose:
+                            print(f"ℹ️ Municipio validation not available; skipping column {col} from counts")
+                        continue
+                    for v in col_values.astype(str):
+                        total_valids += 1
+                        nv = normalize_title(v)
+                        if nv not in municipalities_ref:
+                            errors += 1
+                            if len(bad_examples) < 5:
+                                bad_examples.append(v)
+
+                elif ctype == 'año':
+                    for v in col_values:
+                        total_valids += 1
+                        try:
+                            n = int(str(v).strip())
+                            if n < 1900 or n > 2025:
+                                errors += 1
+                                if len(bad_examples) < 5:
+                                    bad_examples.append(v)
+                        except Exception:
+                            errors += 1
+                            if len(bad_examples) < 5:
+                                bad_examples.append(v)
+
+                elif ctype == 'latitud':
+                    for v in col_values:
+                        total_valids += 1
+                        try:
+                            f = float(str(v).strip())
+                            if f < 0 or f > 13:
+                                errors += 1
+                                if len(bad_examples) < 5:
+                                    bad_examples.append(v)
+                        except Exception:
+                            errors += 1
+                            if len(bad_examples) < 5:
+                                bad_examples.append(v)
+
+                elif ctype == 'longitud':
+                    for v in col_values:
+                        total_valids += 1
+                        try:
+                            f = float(str(v).strip())
+                            if f < -81 or f > -66:
+                                errors += 1
+                                if len(bad_examples) < 5:
+                                    bad_examples.append(v)
+                        except Exception:
+                            errors += 1
+                            if len(bad_examples) < 5:
+                                bad_examples.append(v)
+
+                elif ctype == 'correo':
+                    for v in col_values.astype(str):
+                        total_valids += 1
+                        if not email_re.match(v.strip()):
+                            errors += 1
+                            if len(bad_examples) < 5:
+                                bad_examples.append(v)
+
+                total_errors += errors
+                per_column.append({'column': col, 'type': ctype, 'total': total, 'errors': errors, 'examples': bad_examples})
+                # print per-column result
+                print(f"   → Resultado columna='{col}': total_validados={total}, errores={errors}, ejemplos_errores={bad_examples}")
+
+        if total_valids == 0:
+            if verbose:
+                print("⚠️ No hay valores válidos para calcular conformidad")
+            return None
+
+        proporcion_errores = total_errors / total_valids
+        score = math.exp(-5 * proporcion_errores)
+
+        if verbose:
+            print(f"✔ Total validados: {total_valids}, errores: {total_errors}, proporcion={proporcion_errores:.4f}")
+            print(f"✔ Score (0-1): {score:.4f}")
+
+        details = {
+            'columns_validated': per_column,
+            'total_validated': total_valids,
+            'total_errors': total_errors,
+            'error_rate': proporcion_errores
+        }
+
+        # Guardar en cache simple por si se reusa (no persistente entre ejecuciones)
+        self.cached_scores['conformidad_advanced'] = {'score': score, 'details': details}
+
+        return float(score)
 
     def _calcular_similitud_texto(self, texto1: str, texto2: str) -> float:
         if not texto1 or not texto2:
