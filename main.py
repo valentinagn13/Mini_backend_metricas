@@ -549,6 +549,130 @@ async def get_conformidad(dataset_id: Optional[str] = None) -> ScoreResponse:
         print(f"❌ Error calculando conformidad: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/portabilidad")
+async def get_portabilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Portabilidad del dataset.
+    
+    Portabilidad mide si el recurso se puede descargar y usar sin depender de 
+    software propietario, sin macros, contraseñas ni bloqueos.
+    
+    Análisis realizado:
+    - Clasifica formatos disponibles (muy portable, mediano, no portable)
+    - Evalúa la reutilizabilidad de los datos
+    - Considera metadatos sobre medios de conservación
+    - Aplica pesos según portabilidad de cada formato
+    
+    REQUIERE que los datos estén cargados via POST /load_data.
+    
+    Parámetros:
+        dataset_id: ID del dataset (debe coincidir con el inicializado)
+    
+    Validación:
+        - Dataset debe estar inicializado
+        - Datos deben estar cargados (call /load_data primero)
+        - dataset_id debe coincidir con el dataset actual
+    
+    Retorna:
+        score: float entre 0-10 (10 = dataset completamente portable)
+    """
+    if calculator is None:
+        raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first.")
+    
+    # Backwards-compatible behavior: if dataset_id not provided, use initialized dataset_id
+    if dataset_id is None:
+        dataset_id = calculator.dataset_id
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator.dataset_id != dataset_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset mismatch. Initialized: {calculator.dataset_id}, Requested: {dataset_id}"
+            )
+    
+    # Validar que los datos estén cargados
+    if calculator.df is None or len(calculator.df) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Full data not loaded. Call POST /load_data first to fetch dataset records."
+        )
+    
+    try:
+        print(f"📊 Calculando portabilidad para dataset: {dataset_id}")
+        print("🛈 Metadata usada:")
+        try:
+            print(json.dumps(calculator.metadata, indent=2, ensure_ascii=False))
+        except Exception:
+            print(calculator.metadata)
+        
+        # Llamar a la función
+        score = calculator.calculate_portabilidad()
+        
+        print(f"📈 Métrica de Portabilidad calculada: {score}")
+        return ScoreResponse(score=round(float(score), 2))
+    except Exception as e:
+        print(f"❌ Error calculando portabilidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/disponibilidad")
+async def get_disponibilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Disponibilidad del dataset.
+    
+    Disponibilidad mide la capacidad del dataset de estar **siempre listo y accesible**
+    para su uso. Se calcula como el promedio simple de Accesibilidad y Actualidad.
+    
+    Fórmula:
+    disponibilidad = (accesibilidad + actualidad) / 2
+    
+    Escala de interpretación:
+    - 10: Datos siempre listos y accesibles (máximo)
+    - 7-9: Dataset generalmente disponible (bueno)
+    - 5-6: Disponibilidad parcial (aceptable)
+    - 3-4: Disponibilidad limitada (deficiente)
+    - 0-2: Datos prácticamente no disponibles (crítico)
+    
+    Componentes:
+    - **Accesibilidad**: ¿Qué tan fácil es acceder al dataset? (basada en tags y links)
+    - **Actualidad**: ¿Qué tan reciente es la información? (basada en fecha de actualización)
+    
+    Parámetros:
+        dataset_id: ID del dataset (opcional, usa inicializado si se omite)
+    
+    Retorna:
+        score: float entre 0-10 (10 = dataset siempre disponible)
+    """
+    if calculator is None:
+        raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first.")
+    
+    # Backwards-compatible behavior: if dataset_id not provided, use initialized dataset_id
+    if dataset_id is None:
+        dataset_id = calculator.dataset_id
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator.dataset_id != dataset_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset mismatch. Initialized: {calculator.dataset_id}, Requested: {dataset_id}"
+            )
+    
+    try:
+        print(f"📊 Calculando disponibilidad para dataset: {dataset_id}")
+        print("🛈 Metadata usada:")
+        try:
+            print(json.dumps(calculator.metadata, indent=2, ensure_ascii=False))
+        except Exception:
+            print(calculator.metadata)
+        
+        # Llamar a la función
+        score = calculator.calculate_disponibilidad()
+        
+        print(f"📈 Métrica de Disponibilidad calculada: {score}")
+        return ScoreResponse(score=round(float(score), 2))
+    except Exception as e:
+        print(f"❌ Error calculando disponibilidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/unicidad")
 async def get_unicidad(dataset_id: Optional[str] = None, nivel_riesgo: Optional[float] = 1.5) -> ScoreResponse:
     """Calcula la métrica de Unicidad del dataset (duplicados).

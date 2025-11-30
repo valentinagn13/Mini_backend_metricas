@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import requests
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import re
@@ -29,11 +30,11 @@ class DataQualityCalculator:
         }
         # Lista de respaldo de departamentos (en caso de fallo de la API)
         self._colombia_departments_backup = [
-            'Amazonas','Antioquia','Arauca','Atlántico','Bogotá D.C.','Bolívar','Boyacá','Caldas',
-            'Caquetá','Casanare','Cauca','Cesar','Chocó','Córdoba','Cundinamarca','Guainía',
-            'Guaviare','Huila','La Guajira','Magdalena','Meta','Nariño','Norte de Santander',
-            'Putumayo','Quindío','Risaralda','San Andrés y Providencia','Santander','Sucre',
-            'Tolima','Valle del Cauca','Vaupés','Vichada'
+            'Amazonas', 'Antioquia', 'Arauca', 'Atlántico', 'Bogotá D.C.', 'Bolívar', 'Boyacá', 'Caldas',
+            'Caquetá', 'Casanare', 'Cauca', 'Cesar', 'Chocó', 'Córdoba', 'Cundinamarca', 'Guainía',
+            'Guaviare', 'Huila', 'La Guajira', 'Magdalena', 'Meta', 'Nariño', 'Norte de Santander',
+            'Putumayo', 'Quindío', 'Risaralda', 'San Andrés y Providencia', 'Santander', 'Sucre',
+            'Tolima', 'Valle del Cauca', 'Vaupés', 'Vichada'
         ]
 
     async def load_data(self, limit: int = 50000) -> None:
@@ -51,8 +52,8 @@ class DataQualityCalculator:
         """
         base_url = f"https://www.datos.gov.co/resource/{self.dataset_id}.json"
         
-        print(f"🔗 Obteniendo datos desde: {base_url}")
-        print(f"📦 Límite configurado: {limit} registros")
+        # print(f"🔗 Obteniendo datos desde: {base_url}")
+        # print(f"📦 Límite configurado: {limit} registros")
         
         all_data = []
         offset = 0
@@ -68,7 +69,7 @@ class DataQualityCalculator:
             )
 
             results = client.get(self.dataset_id, limit=limit)
-            print(f"🎯 Registros obtenidos (sodapy): {len(results)}")
+            # print(f"🎯 Registros obtenidos (sodapy): {len(results)}")
 
             if results:
                 df = pd.DataFrame.from_records(results)
@@ -82,76 +83,73 @@ class DataQualityCalculator:
                 except Exception:
                     pass
 
-                print(f"📊 DataFrame cargado en calculador: {self.df_filas} filas, {self.df_columnas} columnas")
+                # print(f"📊 DataFrame cargado en calculador: {self.df_filas} filas, {self.df_columnas} columnas")
                 return
             else:
-                print("⚠️ No se obtuvieron datos desde Socrata (sodapy)")
+                # print("⚠️ No se obtuvieron datos desde Socrata (sodapy)")
                 self.df = pd.DataFrame()
                 self.df_filas = 0
                 self.df_columnas = 0
                 return
-        except Exception as e:
-            print(f"❌ Error cargando datos con sodapy: {e}")
-            self.df = pd.DataFrame()
-            self.df_filas = 0
-            self.df_columnas = 0
-            return
-            while offset < limit:
-                url = f"{base_url}?$limit={page_size}&$offset={offset}"
-                print(f"📄 Solicitando página: offset={offset}, limit={page_size}")
                 
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    page_data = response.json()
-                    records_in_page = len(page_data)
-                    all_data.extend(page_data)
-                    total_obtained += records_in_page
+        except Exception as e:
+            # print(f"❌ Error cargando datos con sodapy: {e}")
+            # Fallback a requests si sodapy falla
+            try:
+                while offset < limit:
+                    url = f"{base_url}?$limit={page_size}&$offset={offset}"
+                    print(f"📄 Solicitando página: offset={offset}, limit={page_size}")
                     
-                    print(f"✅ Página obtenida: {records_in_page} registros (total: {total_obtained})")
-                    
-                    # Si obtenemos menos registros que el page_size, es la última página
-                    if records_in_page < page_size:
-                        print(f"🏁 Última página alcanzada. Total: {total_obtained} registros")
+                    response = requests.get(url, timeout=10)
+                    if response.status_code == 200:
+                        page_data = response.json()
+                        records_in_page = len(page_data)
+                        all_data.extend(page_data)
+                        total_obtained += records_in_page
+                        
+                        print(f"✅ Página obtenida: {records_in_page} registros (total: {total_obtained})")
+                        
+                        # Si obtenemos menos registros que el page_size, es la última página
+                        if records_in_page < page_size:
+                            print(f"🏁 Última página alcanzada. Total: {total_obtained} registros")
+                            break
+                        
+                        # Si hemos alcanzado el límite, detener
+                        if total_obtained >= limit:
+                            print(f"⚠️  Límite de {limit} registros alcanzado")
+                            break
+                        
+                        offset += page_size
+                        time.sleep(0.05)  # Reducida la pausa
+                        
+                    else:
+                        print(f"❌ Error en página {offset}: {response.status_code}")
                         break
+                        
+                print(f"🎯 Total de registros obtenidos: {len(all_data)}")
+                
+                if all_data:
+                    # Crear DataFrame con tipos de datos optimizados
+                    self.df = pd.DataFrame(all_data)
                     
-                    # Si hemos alcanzado el límite, detener
-                    if total_obtained >= limit:
-                        print(f"⚠️  Límite de {limit} registros alcanzado")
-                        break
+                    # Optimizar tipos de datos para reducir memoria
+                    self._optimize_dtypes()
                     
-                    offset += page_size
-                    time.sleep(0.05)  # Reducida la pausa
-                    
+                    self.df_filas = len(self.df)
+                    self.df_columnas = len(self.df.columns)
+                    print(f"📊 DataFrame cargado: {self.df_filas} filas, {self.df_columnas} columnas")
+                    print(f"💾 Memoria usada: {self.df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
                 else:
-                    print(f"❌ Error en página {offset}: {response.status_code}")
-                    break
+                    print("⚠️ No se obtuvieron datos")
+                    self.df = pd.DataFrame()
+                    self.df_filas = 0
+                    self.df_columnas = 0
                     
-            print(f"🎯 Total de registros obtenidos: {len(all_data)}")
-            
-            if all_data:
-                # Crear DataFrame con tipos de datos optimizados
-                self.df = pd.DataFrame(all_data)
-                
-                # Optimizar tipos de datos para reducir memoria
-                self._optimize_dtypes()
-                
-                self.df_filas = len(self.df)
-                self.df_columnas = len(self.df.columns)
-                print(f"📊 DataFrame cargado: {self.df_filas} filas, {self.df_columnas} columnas")
-                print(f"💾 Memoria usada: {self.df.memory_usage(deep=True).sum() / (1024**2):.2f} MB")
-            else:
-                print("⚠️ No se obtuvieron datos")
+            except Exception as e2:
+                print(f"❌ Error obteniendo datos con fallback: {e2}")
                 self.df = pd.DataFrame()
                 self.df_filas = 0
                 self.df_columnas = 0
-                
-        except Exception as e:
-            print(f"❌ Error obteniendo datos: {e}")
-            self.df = pd.DataFrame()
-            self.df_filas = 0
-            self.df_columnas = 0
-            raise
-
     def _optimize_dtypes(self) -> None:
         """
         Optimiza los tipos de datos del DataFrame para reducir memoria y mejorar velocidad.
@@ -264,13 +262,13 @@ class DataQualityCalculator:
         """
         metadata = metadata or self.metadata or {}
 
-        if verbose:
-            print("\n=== DEBUG ACTUALIDAD ===")
-            print("Metadata completa recibida:")
-            try:
-                print(json.dumps(metadata, indent=4, ensure_ascii=False))
-            except Exception:
-                print(metadata)
+        # if verbose:
+        #     print("\n=== DEBUG ACTUALIDAD ===")
+        #     print("Metadata completa recibida:")
+        #     try:
+        #         print(json.dumps(metadata, indent=4, ensure_ascii=False))
+        #     except Exception:
+        #         print(metadata)
 
         # 1) obtener fecha de actualización
         fecha_actualizacion = None
@@ -282,7 +280,7 @@ class DataQualityCalculator:
                 try:
                     fecha_actualizacion = datetime.strptime(fecha_actualizacion_str, '%Y-%m-%d')
                 except Exception:
-                    print(f"⚠ No se pudo parsear fecha_actualizacion: {fecha_actualizacion_str}")
+                    # print(f"⚠ No se pudo parsear fecha_actualizacion: {fecha_actualizacion_str}")
                     fecha_actualizacion = None
 
         # fallback: rowsUpdatedAt (Socrata u otros)
@@ -295,12 +293,13 @@ class DataQualityCalculator:
                     if ts > 1e12:
                         ts = int(ts / 1000)
                     fecha_actualizacion = datetime.fromtimestamp(ts)
-                    print(f"✔ Usando rowsUpdatedAt timestamp -> {fecha_actualizacion}")
+                    # print(f"✔ Usando rowsUpdatedAt timestamp -> {fecha_actualizacion}")
                 except Exception as e:
-                    print(f"⚠ Error parseando rowsUpdatedAt: {e}")
+                    # print(f"⚠ Error parseando rowsUpdatedAt: {e}")
+                    pass
 
         if fecha_actualizacion is None:
-            print("⚠ No se encontró fecha_actualizacion válida -> Puntaje = 5.0")
+            # print("⚠ No se encontró fecha_actualizacion válida -> Puntaje = 5.0")
             return 5.0
 
         # 2) obtener frecuencia en días (puede devolver None o math.inf)
@@ -317,7 +316,8 @@ class DataQualityCalculator:
                                  .get('Información de Datos', {})
                                  .get('Frecuencia de Actualización'))
                 if frecuencia_str:
-                    print(f"✔ Frecuencia encontrada en metadata.custom_fields['Información de Datos']: {frecuencia_str}")
+                    # print(f"✔ Frecuencia encontrada en metadata.custom_fields['Información de Datos']: {frecuencia_str}")
+                    pass
             
             # Opción 2: campos simples de nivel superior
             if not frecuencia_str:
@@ -325,65 +325,94 @@ class DataQualityCalculator:
                                   metadata.get('frecuencia_actualizacion') or
                                   metadata.get('frecuencia'))
                 if frecuencia_str:
-                    print(f"✔ Frecuencia encontrada en campo simple: {frecuencia_str}")
+                    # print(f"✔ Frecuencia encontrada en campo simple: {frecuencia_str}")
+                    pass
             
             # Opción 3: por defecto
             if not frecuencia_str:
                 frecuencia_str = 'Anual'
-                print(f"✔ Usando frecuencia por defecto: {frecuencia_str}")
+                # print(f"✔ Usando frecuencia por defecto: {frecuencia_str}")
+                pass
             
             frecuencia_dias = self._convertir_frecuencia_a_dias(frecuencia_str)
 
-        print(f"✔ frecuencia original metadata: {frecuencia_str}")
-        print(f"✔ frecuencia normalizada (días): {frecuencia_dias}")
+        # print(f"✔ frecuencia original metadata: {frecuencia_str}")
+        # print(f"✔ frecuencia normalizada (días): {frecuencia_dias}")
 
-        # manejo especiales
+        # # manejo especiales
+        # if frecuencia_dias is None:
+        #     print("⚠ Frecuencia = 'No aplica' (indeterminado) -> Puntaje = 5.0")
+        #     return 5.0
+        # if frecuencia_dias == math.inf:
+        #     print("ℹ Frecuencia = 'Nunca' -> dataset declarado como nunca actualizado -> Puntaje = 0.0")
+        #     return 0.0
+
+        # # caso explícito 'más de tres años' — siempre 10.0
+        # # IMPORTANTE: buscar en la misma ubicación donde ya extrajimos frecuencia_str
+        # freq_raw = str(frecuencia_str or '').lower()
+        # # normalizar: remover acentos y caracteres especiales
+        # freq_normalized = re.sub(r'[^a-z0-9\s]', '', freq_raw)
+        # print(f"🔍 DEBUG 'más de tres años': freq_raw='{freq_raw}', freq_normalized='{freq_normalized}'")
+        # if 'mas' in freq_normalized and 'tres' in freq_normalized and 'anos' in freq_normalized:
+        #     print("✅ Frecuencia = 'Más de tres años' -> Puntaje = 10.0")
+        #     return 10.0
+
+        # # caso explícito 'solo una vez' — si fue hace <= 5 años consideramos aceptable
+        # if 'solo' in freq_raw and 'vez' in freq_raw:
+        #     fecha_actual = datetime.now()
+        #     diferencia_dias = (fecha_actual - fecha_actualizacion).days
+        #     print(f"✔ Días transcurridos: {diferencia_dias} (regla 'solo una vez' umbral=5 años)")
+        #     if diferencia_dias <= 5*365:
+        #         print("✅ 'Solo una vez' dentro de 5 años -> Puntaje = 10.0")
+        #         return 10.0
+        #     else:
+        #         print("❌ 'Solo una vez' fuera de 5 años -> Puntaje = 0.0")
+        #         return 0.0
+
+        # # 3) cálculo normal
+        # fecha_actual = datetime.now()
+        # diferencia_dias = (fecha_actual - fecha_actualizacion).days
+        # print(f"✔ Fecha actual: {fecha_actual}")
+        # print(f"✔ Fecha última actualización: {fecha_actualizacion}")
+        # print(f"✔ Días transcurridos desde la última actualización: {diferencia_dias}")
+        # print(f"✔ Comparación: diferencia_dias ({diferencia_dias}) > frecuencia_dias ({frecuencia_dias}) ?")
+
+        # if diferencia_dias > frecuencia_dias:
+        #     print("❌ Desactualizado -> Puntaje = 0.0")
+        #     return 0.0
+        # else:
+        #     print("✅ Dentro de la frecuencia -> Puntaje = 10.0")
+        #     return 10.0
+        
+        # Manejo especiales
         if frecuencia_dias is None:
-            print("⚠ Frecuencia = 'No aplica' (indeterminado) -> Puntaje = 5.0")
             return 5.0
         if frecuencia_dias == math.inf:
-            print("ℹ Frecuencia = 'Nunca' -> dataset declarado como nunca actualizado -> Puntaje = 0.0")
             return 0.0
 
-        # caso explícito 'más de tres años' — siempre 10.0
-        # IMPORTANTE: buscar en la misma ubicación donde ya extrajimos frecuencia_str
+        # Caso explícito 'más de tres años'
         freq_raw = str(frecuencia_str or '').lower()
-        # normalizar: remover acentos y caracteres especiales
         freq_normalized = re.sub(r'[^a-z0-9\s]', '', freq_raw)
-        print(f"🔍 DEBUG 'más de tres años': freq_raw='{freq_raw}', freq_normalized='{freq_normalized}'")
         if 'mas' in freq_normalized and 'tres' in freq_normalized and 'anos' in freq_normalized:
-            print("✅ Frecuencia = 'Más de tres años' -> Puntaje = 10.0")
             return 10.0
 
-        # caso explícito 'solo una vez' — si fue hace <= 5 años consideramos aceptable
+        # Caso explícito 'solo una vez'
         if 'solo' in freq_raw and 'vez' in freq_raw:
             fecha_actual = datetime.now()
             diferencia_dias = (fecha_actual - fecha_actualizacion).days
-            print(f"✔ Días transcurridos: {diferencia_dias} (regla 'solo una vez' umbral=5 años)")
             if diferencia_dias <= 5*365:
-                print("✅ 'Solo una vez' dentro de 5 años -> Puntaje = 10.0")
                 return 10.0
             else:
-                print("❌ 'Solo una vez' fuera de 5 años -> Puntaje = 0.0")
                 return 0.0
 
-        # 3) cálculo normal
+        # Cálculo normal
         fecha_actual = datetime.now()
         diferencia_dias = (fecha_actual - fecha_actualizacion).days
-        print(f"✔ Fecha actual: {fecha_actual}")
-        print(f"✔ Fecha última actualización: {fecha_actualizacion}")
-        print(f"✔ Días transcurridos desde la última actualización: {diferencia_dias}")
-        print(f"✔ Comparación: diferencia_dias ({diferencia_dias}) > frecuencia_dias ({frecuencia_dias}) ?")
 
         if diferencia_dias > frecuencia_dias:
-            print("❌ Desactualizado -> Puntaje = 0.0")
             return 0.0
         else:
-            print("✅ Dentro de la frecuencia -> Puntaje = 10.0")
             return 10.0
-   
-   
-   
    
    
     def _identify_sensitive_columns(self) -> Dict[str, int]:
@@ -437,13 +466,13 @@ class DataQualityCalculator:
         """
         metadata = metadata or self.metadata or {}
 
-        if verbose:
-            print("\n=== DEBUG ACCESIBILIDAD (METADATA) ===")
-            print("Metadata recibida para accesibilidad:")
-            try:
-                print(json.dumps(metadata, indent=2, ensure_ascii=False))
-            except Exception:
-                print(metadata)
+        # if verbose:
+        #     print("\n=== DEBUG ACCESIBILIDAD (METADATA) ===")
+        #     print("Metadata recibida para accesibilidad:")
+        #     try:
+        #         print(json.dumps(metadata, indent=2, ensure_ascii=False))
+        #     except Exception:
+        #         print(metadata)
 
         # Puntaje tags
         tags = metadata.get('tags') or []
@@ -463,10 +492,10 @@ class DataQualityCalculator:
         accesibilidad = puntaje_tags + puntaje_link
         accesibilidad = max(0, min(10, accesibilidad))
 
-        if verbose:
-            print(f"  ✓ tags_count: {len(tags)} -> puntaje_tags={puntaje_tags}")
-            print(f"  ✓ links_found: {links_found} -> puntaje_link={puntaje_link}")
-            print(f"  → accesibilidad (raw) = {accesibilidad}")
+        # if verbose:
+        #     print(f"  ✓ tags_count: {len(tags)} -> puntaje_tags={puntaje_tags}")
+        #     print(f"  ✓ links_found: {links_found} -> puntaje_link={puntaje_link}")
+        #     print(f"  → accesibilidad (raw) = {accesibilidad}")
 
         return float(accesibilidad)
 
@@ -490,18 +519,18 @@ class DataQualityCalculator:
         """
         metadata = metadata or self.metadata or {}
         
-        if verbose:
-            print("\n=== DEBUG CONFIDENCIALIDAD (METADATA) ===")
-            print("Metadata recibida para confidencialidad:")
-            try:
-                print(json.dumps(metadata, indent=2, ensure_ascii=False))
-            except Exception:
-                print(metadata)
+        # if verbose:
+        #     print("\n=== DEBUG CONFIDENCIALIDAD (METADATA) ===")
+        #     print("Metadata recibida para confidencialidad:")
+        #     try:
+        #         print(json.dumps(metadata, indent=2, ensure_ascii=False))
+        #     except Exception:
+        #         print(metadata)
 
         columns_meta = metadata.get('columns') or []
         # columnas pueden venir como lista de dicts con 'name' y 'description'
         total_columns = len(columns_meta)
-        print(f"Total columnas detectadas en metadata: {total_columns}")
+        # print(f"Total columnas detectadas en metadata: {total_columns}")
 
         # palabras clave por nivel de riesgo
         high_kw = [
@@ -527,14 +556,14 @@ class DataQualityCalculator:
 
             # Solo buscar en el NOMBRE de la columna, ignorar descripción para evitar falsos positivos
             name_lower = name.lower()
-            print(f"\n  🔍 Analizando columna: '{name}'")
-            print(f"     Búsqueda de palabras clave solo en el nombre")
+            # print(f"\n  🔍 Analizando columna: '{name}'")
+            # print(f"     Búsqueda de palabras clave solo en el nombre")
 
             found = False
             for kw in high_kw:
                 if kw in name_lower:
                     detected.append((name, 'alto', 3, kw))
-                    print(f"     ✅ Coincidencia ALTO: palabra clave '{kw}' -> peso=3")
+                    # print(f"     ✅ Coincidencia ALTO: palabra clave '{kw}' -> peso=3")
                     found = True
                     break
             if found:
@@ -543,7 +572,7 @@ class DataQualityCalculator:
             for kw in medium_kw:
                 if kw in name_lower:
                     detected.append((name, 'medio', 2, kw))
-                    print(f"     ✅ Coincidencia MEDIO: palabra clave '{kw}' -> peso=2")
+                    # print(f"     ✅ Coincidencia MEDIO: palabra clave '{kw}' -> peso=2")
                     found = True
                     break
             if found:
@@ -552,21 +581,22 @@ class DataQualityCalculator:
             for kw in low_kw:
                 if kw in name_lower:
                     detected.append((name, 'bajo', 1, kw))
-                    print(f"     ✅ Coincidencia BAJO: palabra clave '{kw}' -> peso=1")
+                    # print(f"     ✅ Coincidencia BAJO: palabra clave '{kw}' -> peso=1")
                     found = True
                     break
             
             if not found:
-                print(f"     ❌ No hay coincidencia (columna no sensible)")
+                # print(f"     ❌ No hay coincidencia (columna no sensible)")
+                pass
 
         N_conf = len(detected)
-        print(f"\n📊 RESUMEN DE DETECCIONES")
-        print(f"Columnas marcadas como confidenciales: {N_conf}/{total_columns}")
-        if N_conf > 0:
-            for col_name, nivel, peso, keyword in detected:
-                print(f"  ✓ '{col_name}': nivel={nivel}, peso={peso} (detectada por: '{keyword}')")
-        else:
-            print("  - Ninguna columna confidencial detectada")
+        # print(f"\n📊 RESUMEN DE DETECCIONES")
+        # print(f"Columnas marcadas como confidenciales: {N_conf}/{total_columns}")
+        # if N_conf > 0:
+        #     for col_name, nivel, peso, keyword in detected:
+        #         print(f"  ✓ '{col_name}': nivel={nivel}, peso={peso} (detectada por: '{keyword}')") 
+        # else:
+        #     print("  - Ninguna columna confidencial detectada")
 
         if total_columns == 0:
             print("No hay columnas en metadata -> retorno 10.0 por defecto")
@@ -575,12 +605,12 @@ class DataQualityCalculator:
         propConf = N_conf / total_columns
         riesgo_total = sum(peso for (_, _, peso, _) in detected)
 
-        print(f"\n📐 CÁLCULO DE LA MÉTRICA")
-        print(f"  propConf = {N_conf} / {total_columns} = {propConf:.4f}")
-        print(f"  riesgo_total = {riesgo_total}")
-        print(f"  Fórmula: score = max(0, 10 - (propConf × riesgo_total))")
-        print(f"           score = max(0, 10 - ({propConf:.4f} × {riesgo_total}))")
-        print(f"           score = max(0, 10 - {propConf * riesgo_total:.4f})")
+        # print(f"\n📐 CÁLCULO DE LA MÉTRICA")
+        # print(f"  propConf = {N_conf} / {total_columns} = {propConf:.4f}")
+        # print(f"  riesgo_total = {riesgo_total}")
+        # print(f"  Fórmula: score = max(0, 10 - (propConf × riesgo_total))")
+        # print(f"           score = max(0, 10 - ({propConf:.4f} × {riesgo_total}))")
+        # print(f"           score = max(0, 10 - {propConf * riesgo_total:.4f})")
 
         if N_conf == 0:
             score = 10.0
@@ -601,7 +631,6 @@ class DataQualityCalculator:
 
         return max(0, min(10, relevancia))
     
-
     
     def calculate_trazabilidad(self) -> float:
         metadatos_requeridos = [
@@ -659,12 +688,12 @@ class DataQualityCalculator:
         Si falla, retorna la lista de respaldo.
         """
         if self._api_colombia_cache.get('departments'):
-            print("ℹ️ Usando cache local de departamentos (API Colombia)")
+            # print("ℹ️ Usando cache local de departamentos (API Colombia)")
             return self._api_colombia_cache['departments']
 
         url = 'https://api-colombia.com/api/v1/Department'
         try:
-            print(f"🔗 Consultando API Colombia departamentos: {url}")
+            # print(f"🔗 Consultando API Colombia departamentos: {url}")
             resp = requests.get(url, timeout=6)
             if resp.status_code == 200:
                 data = resp.json()
@@ -678,55 +707,29 @@ class DataQualityCalculator:
                 # deduplicate and cache
                 names = sorted(list(set(names)))
                 if names:
-                    print(f"✅ API Colombia devolvió {len(names)} departamentos (cacheados)")
+                    # print(f"✅ API Colombia devolvió {len(names)} departamentos (cacheados)")
                     self._api_colombia_cache['departments'] = names
                     return names
                 else:
-                    print("⚠️ API Colombia devolvió lista vacía de departamentos")
+                    # print("⚠️ API Colombia devolvió lista vacía de departamentos")
+                    pass
         except Exception as e:
-            print(f"⚠️ Error llamando API Colombia departamentos: {e}")
+            # print(f"⚠️ Error llamando API Colombia departamentos: {e}")
+            pass
 
         # fallback
         backup = [d.title() for d in self._colombia_departments_backup]
-        print(f"🔁 Usando fallback local de departamentos ({len(backup)} entradas)")
+        # print(f"🔁 Usando fallback local de departamentos ({len(backup)} entradas)")
         self._api_colombia_cache['departments'] = backup
         return backup
 
-    # def _fetch_colombia_municipalities(self) -> Optional[set]:
-    #     """
-    #     Intenta obtener municipios desde la API (si está disponible).
-    #     Devuelve un set de nombres normalizados o None si no es posible.
-    #     """
-    #     if self._api_colombia_cache.get('municipalities') is not None:
-    #         return self._api_colombia_cache['municipalities']
-
-    #     url = 'https://api-colombia.com/api/v1/Municipality'
-    #     try:
-    #         resp = requests.get(url, timeout=6)
-    #         if resp.status_code == 200:
-    #             data = resp.json()
-    #             names = set()
-    #             if isinstance(data, list):
-    #                 for item in data:
-    #                     name = item.get('name') or item.get('municipality') or item.get('nombre')
-    #                     if name:
-    #                         names.add(str(name).strip().title())
-    #             if names:
-    #                 self._api_colombia_cache['municipalities'] = names
-    #                 return names
-    #     except Exception:
-    #         pass
-
-    #     # If failed, store None to indicate unavailability
-    #     self._api_colombia_cache['municipalities'] = None
-    #     return None
     def _fetch_colombia_municipalities(self) -> Optional[set]:
         """
         Intenta obtener municipios desde la API usando el endpoint por departamento.
         Devuelve un set de nombres normalizados o None si no es posible.
         """
         if self._api_colombia_cache.get('municipalities') is not None:
-            print("ℹ️ Usando cache local de municipios (API Colombia)")
+            # print("ℹ️ Usando cache local de municipios (API Colombia)")
             return self._api_colombia_cache['municipalities']
 
         try:
@@ -774,26 +777,26 @@ class DataQualityCalculator:
                                     mun_count += 1
                             
                             successful_depts += 1
-                            print(f"  📍 {dept_name}: {mun_count} municipios")
+                            # print(f"  📍 {dept_name}: {mun_count} municipios")
                     
                 except requests.exceptions.Timeout:
-                    print(f"⏰ Timeout en {dept_name}")
+                    # print(f"⏰ Timeout en {dept_name}")
                     continue
                 except Exception as e:
-                    print(f"⚠️ Error en {dept_name}: {e}")
+                    # print(f"⚠️ Error en {dept_name}: {e}")
                     continue
 
             if all_municipalities:
-                print(f"✅ Obtenidos {len(all_municipalities)} municipios de {successful_depts}/{len(departamentos)} departamentos")
+                # print(f"✅ Obtenidos {len(all_municipalities)} municipios de {successful_depts}/{len(departamentos)} departamentos")
                 self._api_colombia_cache['municipalities'] = all_municipalities
                 return all_municipalities
             else:
-                print("❌ No se pudieron obtener municipios")
+                # print("❌ No se pudieron obtener municipios")
                 self._api_colombia_cache['municipalities'] = None
                 return None
 
         except Exception as e:
-            print(f"❌ Error crítico: {e}")
+            # print(f"❌ Error crítico: {e}")
             self._api_colombia_cache['municipalities'] = None
             return None
     def _detect_relevant_columns(self, metadata: Optional[Dict] = None) -> Dict[str, List[str]]:
@@ -839,10 +842,10 @@ class DataQualityCalculator:
         for k in detected:
             detected[k] = list(dict.fromkeys(detected[k]))
 
-        # Debug print de columnas detectadas
-        print("🔎 Columnas detectadas por tipo:")
-        for k, v in detected.items():
-            print(f"   - {k}: {v}")
+        # # Debug print de columnas detectadas
+        # print("🔎 Columnas detectadas por tipo:")
+        # for k, v in detected.items():
+        #     print(f"   - {k}: {v}")
 
         return detected
 
@@ -854,39 +857,39 @@ class DataQualityCalculator:
         """
         metadata = metadata or self.metadata or {}
 
-        if verbose:
-            print("\n=== DEBUG CONFORMIDAD AVANZADA ===")
+        # if verbose:
+        #     print("\n=== DEBUG CONFORMIDAD AVANZADA ===")
 
-        # Mostrar resumen de metadata recibida (claves importantes)
-        if verbose:
-            try:
-                cols_meta = metadata.get('columns') or []
-                print(f"🛈 Metadata summary: name={metadata.get('name')}, id={metadata.get('id')}, columns_in_metadata={len(cols_meta)}")
-            except Exception:
-                print("🛈 Metadata summary: (no se pudo leer resumen)")
+        # # Mostrar resumen de metadata recibida (claves importantes)
+        # if verbose:
+        #     try:
+        #         cols_meta = metadata.get('columns') or []
+        #         print(f"🛈 Metadata summary: name={metadata.get('name')}, id={metadata.get('id')}, columns_in_metadata={len(cols_meta)}")
+        #     except Exception:
+        #         print("🛈 Metadata summary: (no se pudo leer resumen)")
 
         detected = self._detect_relevant_columns(metadata)
         # Flatten detected columns list and check if any present
         any_found = any(len(v) > 0 for v in detected.values())
         if not any_found:
-            if verbose:
-                print("⚠️ No se detectaron columnas relevantes para conformidad")
+            # if verbose:
+            #     print("⚠️ No se detectaron columnas relevantes para conformidad")
             return None
 
         # Require data present
         if self.df is None or len(self.df) == 0:
-            if verbose:
-                print("⚠️ No hay datos cargados para validar conformidad")
+            # if verbose:
+            #     print("⚠️ No hay datos cargados para validar conformidad")
             return None
 
         # Fetch reference data (and print what we received)
         departments_ref = set(self._fetch_colombia_departments())
-        print(f"📚 Referencia departamentos: {len(departments_ref)} items (ejemplo: {list(departments_ref)[:5]})")
+        # print(f"📚 Referencia departamentos: {len(departments_ref)} items (ejemplo: {list(departments_ref)[:5]})")
         municipalities_ref = self._fetch_colombia_municipalities()
-        if municipalities_ref is None:
-            print("📚 Referencia municipios: NO DISPONIBLE (se omitirá validación municipal)")
-        else:
-            print(f"📚 Referencia municipios: {len(municipalities_ref)} items (ejemplo: {list(municipalities_ref)[:5]})")
+        # if municipalities_ref is None:
+        #     print("📚 Referencia municipios: NO DISPONIBLE (se omitirá validación municipal)")
+        # else:
+        #     print(f"📚 Referencia municipios: {len(municipalities_ref)} items (ejemplo: {list(municipalities_ref)[:5]})")
 
         email_re = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
 
@@ -907,23 +910,23 @@ class DataQualityCalculator:
                 col_series = self.df.get(col)
                 if col_series is None:
                     continue
-                # Print column diagnostics
-                try:
-                    dtype = str(col_series.dtype)
-                    non_null_mask = col_series.notna()
-                    col_values = col_series[non_null_mask]
-                    non_null_count = int(col_values.shape[0])
-                    unique_count = int(col_values.nunique(dropna=True))
-                    sample_vals = col_values.head(5).astype(str).tolist()
-                    try:
-                        top_counts = col_values.astype(str).value_counts().head(5).to_dict()
-                    except Exception:
-                        top_counts = {}
-                    print(f"\n➡ Validando columna='{col}' tipo_detectado={ctype} dtype={dtype} non_null={non_null_count} unique={unique_count}")
-                    print(f"   • Muestra head: {sample_vals}")
-                    print(f"   • Top valores: {top_counts}")
-                except Exception as e:
-                    print(f"⚠️ Error al obtener diagnosticos de columna {col}: {e}")
+                # # Print column diagnostics
+                # try:
+                #     dtype = str(col_series.dtype)
+                #     non_null_mask = col_series.notna()
+                #     col_values = col_series[non_null_mask]
+                #     non_null_count = int(col_values.shape[0])
+                #     unique_count = int(col_values.nunique(dropna=True))
+                #     sample_vals = col_values.head(5).astype(str).tolist()
+                #     try:
+                #         top_counts = col_values.astype(str).value_counts().head(5).to_dict()
+                #     except Exception:
+                #         top_counts = {}
+                #     print(f"\n➡ Validando columna='{col}' tipo_detectado={ctype} dtype={dtype} non_null={non_null_count} unique={unique_count}")
+                #     print(f"   • Muestra head: {sample_vals}")
+                #     print(f"   • Top valores: {top_counts}")
+                # except Exception as e:
+                #     print(f"⚠️ Error al obtener diagnosticos de columna {col}: {e}")
 
                 non_null_mask = col_series.notna()
                 col_values = col_series[non_null_mask]
@@ -1269,37 +1272,6 @@ class DataQualityCalculator:
 
         return max(0, min(10, precision))
 
-    def calculate_portabilidad(self) -> float:
-        num_caracteres_especiales = 0
-        for col in self.df.columns:
-            if self.df[col].dtype == 'object':
-                caracteres_especiales = self.df[col].astype(str).str.contains(r'[^\w\s\.,;:\-\(\)]', regex=True).sum()
-                num_caracteres_especiales += caracteres_especiales
-
-        total_celdas_texto = sum(1 for col in self.df.columns if self.df[col].dtype == 'object') * self.df_filas
-        medida_caracteres = 10 * (1 - num_caracteres_especiales / total_celdas_texto) if total_celdas_texto > 0 else 10.0
-
-        total_nulos = self.df.isna().sum().sum()
-        total_celdas = self.df_columnas * self.df_filas
-        medida_sin_nulos = 10 * (1 - total_nulos / total_celdas) if total_celdas > 0 else 10.0
-
-        tamano_mb = self.df.memory_usage(deep=True).sum() / (1024 * 1024)
-        if tamano_mb < 10:
-            medida_tamano = 10.0
-        elif tamano_mb < 50:
-            medida_tamano = 7.0
-        else:
-            medida_tamano = 5.0
-
-        portabilidad_base = (medida_caracteres + medida_sin_nulos + medida_tamano) / 3
-
-        conformidad = self.calculate_conformidad()
-        completitud = self.calculate_completitud()
-
-        total_portabilidad = (portabilidad_base * 0.50 + conformidad * 0.25 + completitud * 0.25)
-
-        return max(0, min(10, total_portabilidad))
-
     def calculate_credibilidad(self) -> float:
         metadatos_fuente = ['fuente', 'descripcion', 'fecha_actualizacion']
         metadatos_completos = sum(1 for campo in metadatos_fuente if self.metadata.get(campo))
@@ -1347,33 +1319,6 @@ class DataQualityCalculator:
         accesibilidad = puntaje_tags + puntaje_link
 
         return max(0, min(10, accesibilidad))
-
-    def calculate_unicidad(self) -> float:
-        filas_duplicadas = self.df.duplicated().sum()
-        proporcion_filas_duplicadas = 10 * (1 - filas_duplicadas / self.df_filas) if self.df_filas > 0 else 10.0
-
-        col_nombres_lower = [str(col).lower().strip() for col in self.df.columns]
-        num_col_duplicadas = len(col_nombres_lower) - len(set(col_nombres_lower))
-        proporcion_columnas_duplicadas = 10 * (1 - num_col_duplicadas / self.df_columnas) if self.df_columnas > 0 else 10.0
-
-        unicidad = (proporcion_filas_duplicadas + proporcion_columnas_duplicadas) / 2
-
-        return max(0, min(10, unicidad))
-
-    def calculate_eficiencia(self) -> float:
-        completitud = self.calculate_completitud()
-
-        filas_duplicadas = self.df.duplicated().sum()
-        medida_filas_duplicadas = 10 * (1 - filas_duplicadas / self.df_filas) if self.df_filas > 0 else 10.0
-
-        col_nombres_lower = [str(col).lower().strip() for col in self.df.columns]
-        num_col_duplicadas = len(col_nombres_lower) - len(set(col_nombres_lower))
-        medida_columnas_duplicadas = 10 * (1 - num_col_duplicadas / self.df_columnas) if self.df_columnas > 0 else 10.0
-
-        eficiencia = (completitud + medida_filas_duplicadas + medida_columnas_duplicadas) / 3
-
-        return max(0, min(10, eficiencia))
-
     def calculate_unicidad(self, nivel_riesgo: float = 1.5) -> float:
         """
         Calcula el índice de Unicidad del dataset.
@@ -1394,6 +1339,10 @@ class DataQualityCalculator:
         Returns:
             float: Score entre 0 y 10, donde 10 = sin duplicados
         """
+        print("\n" + "="*70)
+        print("🔍 INICIO DEL CÁLCULO DE UNICIDAD")
+        print("="*70)
+        
         # Validar que tengamos datos cargados
         if self.df is None or len(self.df) == 0:
             print("⚠️  No hay datos cargados. Retornando score = 5.0 (indeterminado)")
@@ -1402,50 +1351,325 @@ class DataQualityCalculator:
         total_filas = len(self.df)
         total_columnas = len(self.df.columns)
         
-        # ===== DETECCIÓN DE FILAS DUPLICADAS =====
-        filas_duplicadas = self.df.duplicated().sum()
-        proporcion_filas_dup = filas_duplicadas / total_filas if total_filas > 0 else 0
+        print(f"\n📦 INFORMACIÓN BÁSICA DEL DATASET")
+        print(f"   • Total de filas (registros): {total_filas}")
+        print(f"   • Total de columnas: {total_columnas}")
+        print(f"   • Tamaño del dataset: {total_filas} x {total_columnas}")
         
-        print(f"\n📊 INFORMACIÓN DEL DATASET PARA UNICIDAD")
-        print(f"  ✓ Total de registros (filas): {total_filas}")
-        print(f"  ✓ Filas duplicadas exactas: {filas_duplicadas}")
-        print(f"  ✓ Proporción de filas duplicadas: {proporcion_filas_dup:.4f} ({proporcion_filas_dup*100:.2f}%)")
-        print(f"  ✓ Total de columnas: {total_columnas}")
+        # ===== DETECCIÓN DE FILAS DUPLICADAS =====
+        print(f"\n🔎 PASO 1: DETECCIÓN DE FILAS DUPLICADAS")
+        print(f"   Analizando si hay filas con exactamente los mismos valores en TODAS las columnas...")
+
+        # Construir claves serializables por fila para evitar errores con tipos no hashables
+        def _cell_key(x):
+            try:
+                # pandas NA handling
+                if pd.isna(x):
+                    return None
+            except Exception:
+                pass
+            try:
+                # Intentar serializar con json para dicts/lists/u otros
+                return json.dumps(x, sort_keys=True, default=str, ensure_ascii=False)
+            except Exception:
+                return str(x)
+
+        try:
+            row_keys = self.df.apply(lambda r: tuple(_cell_key(c) for c in r), axis=1)
+            filas_duplicadas = int(row_keys.duplicated().sum())
+        except Exception as e:
+            # Fallback: intentar llamada segura por filas
+            print(f"⚠️ Error construyendo claves de fila para detección: {e}")
+            filas_duplicadas = int(self.df.duplicated().sum())
+
+        proporcion_filas_dup = filas_duplicadas / total_filas if total_filas > 0 else 0
+
+        print(f"\n   ✓ Filas duplicadas encontradas: {filas_duplicadas}")
+        print(f"   ✓ Proporción de duplicados: {proporcion_filas_dup:.6f}")
+        print(f"   ✓ Porcentaje de duplicados: {proporcion_filas_dup*100:.4f}%")
+        print(f"   ✓ Filas ÚNICAS: {total_filas - filas_duplicadas}")
+        print(f"   ✓ Tasa de unicidad (filas): {((1 - proporcion_filas_dup)*100):.4f}%")
+
+        # Mostrar ejemplos de filas duplicadas si las hay
+        if filas_duplicadas > 0:
+            print(f"\n   ⚠️  ADVERTENCIA: Se encontraron {filas_duplicadas} filas duplicadas")
+            try:
+                duplicated_mask = row_keys.duplicated(keep=False)
+                dup_rows = self.df[duplicated_mask]
+                print(f"   Mostrando hasta 3 ejemplos de filas duplicadas:")
+                for idx, row in dup_rows.head(3).iterrows():
+                    try:
+                        print(f"      - Fila {idx}: {dict(row)}")
+                    except Exception:
+                        print(f"      - Fila {idx}: (no se pudo serializar fila)")
+            except Exception as e:
+                print(f"      Error mostrando ejemplos: {e}")
+        else:
+            print(f"   ✅ NO se encontraron filas duplicadas - Excelente!")
         
         # ===== DETECCIÓN DE COLUMNAS DUPLICADAS =====
+        print(f"\n🔎 PASO 2: DETECCIÓN DE COLUMNAS DUPLICADAS")
+        print(f"   Analizando si hay columnas con exactamente los mismos valores en TODAS las filas...")
+        
         columnas_duplicadas = 0
+        pares_duplicados = []
+        columnas_unicas = set()
         
+        # Método CORREGIDO para detectar columnas duplicadas
+        print(f"   Comparando todas las combinaciones de columnas...")
+        print(f"   Total de comparaciones a hacer: {(total_columnas * (total_columnas - 1)) // 2}")
+        
+        # Construir claves serializables para cada columna (para evitar problemas con dtypes complejos)
+        print(f"   Construyendo claves serializables por columna para comparación robusta...")
+        column_keys = {}
+        try:
+            for col_name in self.df.columns:
+                # serializar cada valor de la columna usando _cell_key definido arriba
+                try:
+                    col_vals = self.df[col_name]
+                    col_key = tuple(_cell_key(v) for v in col_vals)
+                except Exception:
+                    # Fallback: convertir a string
+                    col_key = tuple(str(v) for v in self.df[col_name].astype(object).fillna('NaN'))
+                column_keys[col_name] = col_key
+        except Exception as e:
+            print(f"      ⚠️ Error construyendo claves de columna: {e}")
+
+        # Comparar claves de columna en pares
         for i in range(len(self.df.columns)):
+            col_i_name = self.df.columns[i]
+
+            # Si esta columna ya fue marcada como duplicada, saltar
+            if col_i_name in columnas_unicas:
+                continue
+
             for j in range(i + 1, len(self.df.columns)):
-                col_i = self.df.iloc[:, i]
-                col_j = self.df.iloc[:, j]
-                
-                # Comparar columnas (ignorando NaN en la comparación)
-                if col_i.equals(col_j) or (col_i.isna() == col_j.isna()).all() and \
-                   (col_i.dropna().equals(col_j.dropna()) if len(col_i.dropna()) > 0 else True):
-                    columnas_duplicadas += 1
+                col_j_name = self.df.columns[j]
+
+                # Si esta columna ya fue marcada como duplicada, saltar
+                if col_j_name in columnas_unicas:
+                    continue
+
+                try:
+                    key_i = column_keys.get(col_i_name)
+                    key_j = column_keys.get(col_j_name)
+
+                    if key_i is None or key_j is None:
+                        # si no pudimos construir alguna clave, saltar comparación
+                        continue
+
+                    if key_i == key_j:
+                        columnas_duplicadas += 1
+                        pares_duplicados.append((col_i_name, col_j_name))
+                        columnas_unicas.add(col_j_name)
+                        print(f"      ⚠️  Columnas duplicadas: '{col_i_name}' <-> '{col_j_name}'")
+                        continue
+                except Exception as e:
+                    print(f"      Error comparando '{col_i_name}' con '{col_j_name}': {e}")
         
-        proporcion_columnas_dup = columnas_duplicadas / total_columnas if total_columnas > 0 else 0
+        # Calcular proporción CORREGIDA
+        # La proporción debe ser: columnas_duplicadas / total_columnas_posibles_duplicadas
+        if total_columnas > 1:
+            # Máximo número posible de columnas duplicadas es total_columnas - 1
+            max_posibles_duplicadas = total_columnas - 1
+            proporcion_columnas_dup = columnas_duplicadas / max_posibles_duplicadas if max_posibles_duplicadas > 0 else 0
+        else:
+            proporcion_columnas_dup = 0
         
-        print(f"  ✓ Columnas duplicadas exactas: {columnas_duplicadas}")
-        print(f"  ✓ Proporción de columnas duplicadas: {proporcion_columnas_dup:.4f} ({proporcion_columnas_dup*100:.2f}%)")
+        print(f"\n   ✓ Columnas duplicadas encontradas: {columnas_duplicadas}")
+        print(f"   ✓ Proporción de columnas duplicadas: {proporcion_columnas_dup:.6f}")
+        
+        if columnas_duplicadas == 0:
+            print(f"   ✅ NO se encontraron columnas duplicadas - Excelente!")
+        else:
+            print(f"   Pares encontrados: {pares_duplicados}")
         
         # ===== CÁLCULO DE UNICIDAD =====
-        medida_filas = (1 - proporcion_filas_dup) ** nivel_riesgo
-        medida_columnas = (1 - proporcion_columnas_dup) ** nivel_riesgo
+        print(f"\n📐 PASO 3: CÁLCULO DEL SCORE DE UNICIDAD")
+        print(f"   Parámetro nivel_riesgo: {nivel_riesgo}")
         
-        unicidad = ((medida_filas + medida_columnas) / 2) * 10
+        print(f"\n   Fórmula:")
+        print(f"      medida_filas = (1 - proporcion_filas_dup) ^ nivel_riesgo")
+        print(f"      medida_columnas = (1 - proporcion_columnas_dup) ^ nivel_riesgo")
+        print(f"      unicidad = [(medida_filas + medida_columnas) / 2] × 10")
+        
+        # Aplicar la fórmula con manejo de casos edge
+        medida_filas = (1 - min(proporcion_filas_dup, 1.0)) ** nivel_riesgo
+        medida_columnas = (1 - min(proporcion_columnas_dup, 1.0)) ** nivel_riesgo
+        
+        print(f"\n   Sustituyendo valores:")
+        print(f"      medida_filas = (1 - {proporcion_filas_dup:.6f}) ^ {nivel_riesgo}")
+        print(f"      medida_filas = {1 - proporcion_filas_dup:.6f} ^ {nivel_riesgo}")
+        print(f"      medida_filas = {medida_filas:.6f}")
+        
+        print(f"\n      medida_columnas = (1 - {proporcion_columnas_dup:.6f}) ^ {nivel_riesgo}")
+        print(f"      medida_columnas = {1 - proporcion_columnas_dup:.6f} ^ {nivel_riesgo}")
+        print(f"      medida_columnas = {medida_columnas:.6f}")
+        
+        promedio_medidas = (medida_filas + medida_columnas) / 2
+        print(f"\n      Promedio de medidas = ({medida_filas:.6f} + {medida_columnas:.6f}) / 2")
+        print(f"      Promedio de medidas = {promedio_medidas:.6f}")
+        
+        unicidad = promedio_medidas * 10
+        print(f"\n      unicidad (antes de limitar) = {promedio_medidas:.6f} × 10 = {unicidad:.6f}")
+        
         unicidad = max(0, min(10, unicidad))
+        print(f"      unicidad (después de limitar a [0, 10]) = {unicidad:.6f}")
         
-        print(f"\n📐 CÁLCULO DE UNICIDAD (nivel_riesgo={nivel_riesgo})")
-        print(f"  Medida de filas: (1 - {proporcion_filas_dup:.4f})^{nivel_riesgo} = {medida_filas:.4f}")
-        print(f"  Medida de columnas: (1 - {proporcion_columnas_dup:.4f})^{nivel_riesgo} = {medida_columnas:.4f}")
-        print(f"  Fórmula: [({medida_filas:.4f} + {medida_columnas:.4f}) / 2] × 10")
-        
-        print(f"\n🎯 RESULTADO FINAL DE UNICIDAD")
-        print(f"  Unicidad = {unicidad:.2f}")
+        print(f"\n" + "="*70)
+        print(f"🎯 RESULTADO FINAL DE UNICIDAD: {unicidad:.4f}/10")
+        print("="*70 + "\n")
         
         return float(unicidad)
+
+
+
+
+    def calculate_portabilidad(self) -> float:
+        """
+        Calcula el score de portabilidad basado en formatos disponibles en el dataset.
+        
+        Portabilidad mide si el recurso se puede descargar y usar sin depender de 
+        software propietario, sin macros, contraseñas ni bloqueos.
+        
+        Returns:
+            float: Score entre 0 y 10
+        """
+        print("\n" + "="*70)
+        print("📦 INICIO DEL CÁLCULO DE PORTABILIDAD")
+        print("="*70)
+        
+        # Validar datos cargados
+        if self.df is None or len(self.df) == 0:
+            print("❌ No hay datos cargados. Retornando 0.0")
+            return 0.0
+        
+        total_recursos = len(self.df)
+        print(f"📊 Analizando {total_recursos} recursos para portabilidad...")
+        
+        # Clasificación de formatos basada en la columna 'd_formato'
+        # Considerando la falta de datos completos, asignamos puntajes conservadores
+        
+        formatos_muy_portables = {
+            'Excel', 'Hoja de calculo', 'Hoja de calculo / Web'
+            # Asumimos que son XLSX sin macros por defecto (optimista pero realista)
+        }
+        
+        formatos_medianamente_portables = {
+            'Web', 'Web/Pdf', 'Pdf/Web'
+            # Web puede contener datos estructurados, pero requiere verificación
+        }
+        
+        formatos_no_portables = {
+            'Pdf'  # Formato cerrado, difícil reutilización
+        }
+        
+        # Contadores
+        count_muy_portables = 0
+        count_medianos = 0
+        count_no_portables = 0
+        count_desconocidos = 0
+        
+        print(f"\n🔍 CLASIFICANDO FORMATOS:")
+        
+        # Analizar cada recurso según su formato
+        for idx, row in self.df.iterrows():
+            formato = str(row.get('d_formato', '')).strip()
+            medio = str(row.get('c_medio_de_conservaci_n_y', '')).strip()
+            
+            # Clasificación
+            if formato in formatos_muy_portables:
+                count_muy_portables += 1
+                print(f"   ✅ MUY PORTABLE: '{formato}' (medio: {medio})")
+            elif formato in formatos_medianamente_portables:
+                count_medianos += 1
+                print(f"   ⚠️  MEDIANAMENTE: '{formato}' (medio: {medio})")
+            elif formato in formatos_no_portables:
+                count_no_portables += 1
+                print(f"   ❌ NO PORTABLE: '{formato}' (medio: {medio})")
+            else:
+                count_desconocidos += 1
+                print(f"   ❓ DESCONOCIDO: '{formato}' (medio: {medio})")
+        
+        # Ajuste por falta de datos completos - asumimos conservadoramente
+        # que los formatos desconocidos son medianamente portables
+        count_medianos += count_desconocidos
+        
+        print(f"\n📊 RESULTADOS DE CLASIFICACIÓN:")
+        print(f"   • Muy portables: {count_muy_portables}/{total_recursos}")
+        print(f"   • Medianamente portables: {count_medianos}/{total_recursos}")
+        print(f"   • No portables: {count_no_portables}/{total_recursos}")
+        if count_desconocidos > 0:
+            print(f"   • Desconocidos (asumidos como medianos): {count_desconocidos}")
+        
+        # Cálculo del score con pesos
+        peso_muy_portable = 1.0      # Excel/CSV/JSON - formatos ideales
+        peso_medio = 0.5             # Web/formatos mixtos - requieren procesamiento
+        peso_no_portable = 0.0       # PDF - no reutilizable directamente
+        
+        # Puntuación cruda lineal
+        puntuacion_cruda = (
+            (count_muy_portables * peso_muy_portable) + 
+            (count_medianos * peso_medio) + 
+            (count_no_portables * peso_no_portable)
+        ) / total_recursos
+        
+        # Aplicar penalización cuadrática (similar a otros criterios)
+        # Esto penaliza más los datasets con alta proporción de formatos no portables
+        portabilidad = 10 * (1 - (1 - puntuacion_cruda) ** 1.2)
+        
+        # Ajuste adicional por falta de metadatos completos
+        # Reducimos ligeramente el score porque no tenemos información sobre:
+        # - Extensiones específicas de archivo
+        # - Presencia de macros o contraseñas
+        # - Tipos MIME exactos
+        factor_ajuste_metadatos = 0.9  # Penalización del 10% por falta de datos completos
+        
+        portabilidad_ajustada = portabilidad * factor_ajuste_metadatos
+        portabilidad_final = max(0, min(10, portabilidad_ajustada))
+        
+        print(f"\n📐 CÁLCULO DEL SCORE:")
+        print(f"   Puntuación cruda: {puntuacion_cruda:.4f}")
+        print(f"   Portabilidad (sin ajuste): {portabilidad:.4f}")
+        print(f"   Ajuste por metadatos incompletos: ×{factor_ajuste_metadatos}")
+        print(f"   Portabilidad final: {portabilidad_final:.4f}")
+        
+        # Evaluación cualitativa
+        proporcion_muy_portables = (count_muy_portables / total_recursos) * 100
+        proporcion_portables_total = ((count_muy_portables + count_medianos) / total_recursos) * 100
+        
+        print(f"\n📋 EVALUACIÓN CUALITATIVA:")
+        print(f"   • Formatos muy portables: {proporcion_muy_portables:.1f}%")
+        print(f"   • Formatos portables total: {proporcion_portables_total:.1f}%")
+        
+        if proporcion_muy_portables >= 70:
+            print(f"   ✅ EXCELENTE: Alta proporción de formatos muy portables")
+        elif proporcion_portables_total >= 60:
+            print(f"   ⚠️  ACEPTABLE: Mayoría de formatos son portables")
+        elif proporcion_portables_total >= 30:
+            print(f"   🔶 REGULAR: Menos de la mitad en formatos portables")
+        else:
+            print(f"   ❌ DEFICIENTE: Muy pocos formatos portables")
+        
+        # Información sobre limitaciones
+        print(f"\n💡 LIMITACIONES:")
+        print(f"   • No hay información sobre extensiones específicas (.csv, .xlsx, etc.)")
+        print(f"   • No hay datos sobre presencia de macros o contraseñas")
+        print(f"   • No se conocen tipos MIME exactos")
+        print(f"   • Score ajustado a la baja por falta de metadatos completos")
+        
+        print(f"\n" + "="*70)
+        print(f"🎯 PORTABILIDAD FINAL: {portabilidad_final:.4f}/10")
+        print("="*70)
+        
+        # Cachear el resultado
+        self.cached_scores['portabilidad'] = portabilidad_final
+        
+        return float(portabilidad_final)
+
+
+
+
 
     def calculate_recuperabilidad(self) -> float:
         accesibilidad = self.calculate_accesibilidad()
@@ -1463,12 +1687,94 @@ class DataQualityCalculator:
         return max(0, min(10, recuperabilidad))
 
     def calculate_disponibilidad(self) -> float:
-        accesibilidad = self.calculate_accesibilidad()
-        actualidad = self.calculate_actualidad(self.metadata)
-
+        """
+        Calcula la métrica de Disponibilidad del dataset.
+        
+        Disponibilidad mide la capacidad del dataset de estar **siempre listo y accesible**
+        para su uso. Se calcula como el promedio simple de Accesibilidad y Actualidad.
+        
+        La guía define disponibilidad como:
+        
         disponibilidad = (accesibilidad + actualidad) / 2
-
-        return max(0, min(10, disponibilidad))
+        
+        Interpretación:
+        - Ambos son 10: disponibilidad = 10 (máximo, datos siempre listos)
+        - Uno es 10 y otro 0: disponibilidad = 5 (parcial)
+        - Ambos son 0: disponibilidad = 0 (no usable)
+        
+        Componentes:
+        1. **Accesibilidad**: ¿Qué tan fácil es acceder al dataset?
+           - Basada en tags y links en metadatos
+        
+        2. **Actualidad**: ¿Qué tan reciente es la información?
+           - Basada en fecha de última actualización
+        
+        Returns:
+            float: Score entre 0 y 10, donde 10 = dataset siempre disponible
+        """
+        print("\n" + "="*70)
+        print("📡 INICIO DEL CÁLCULO DE DISPONIBILIDAD")
+        print("="*70)
+        
+        # Validar metadata
+        if self.metadata is None:
+            print("⚠️  No hay metadatos disponibles. Retornando score = 5.0 (indeterminado)")
+            return 5.0
+        
+        # ===== COMPONENTE 1: ACCESIBILIDAD =====
+        print(f"\n🔗 COMPONENTE 1: ACCESIBILIDAD")
+        print(f"   Evaluando tags y links en metadatos...")
+        try:
+            accesibilidad = self.calculate_accesibilidad_from_metadata(self.metadata, verbose=False)
+            print(f"   ✓ Accesibilidad calculada: {accesibilidad:.4f}/10")
+        except Exception as e:
+            print(f"   ⚠️  Error calculando accesibilidad: {e}")
+            accesibilidad = 5.0
+            print(f"   → Usando valor neutral: {accesibilidad:.4f}/10")
+        
+        # ===== COMPONENTE 2: ACTUALIDAD =====
+        print(f"\n📅 COMPONENTE 2: ACTUALIDAD")
+        print(f"   Evaluando fecha de última actualización...")
+        try:
+            actualidad = self.calculate_actualidad(self.metadata, verbose=False)
+            print(f"   ✓ Actualidad calculada: {actualidad:.4f}/10")
+        except Exception as e:
+            print(f"   ⚠️  Error calculando actualidad: {e}")
+            actualidad = 5.0
+            print(f"   → Usando valor neutral: {actualidad:.4f}/10")
+        
+        # ===== CÁLCULO DE DISPONIBILIDAD =====
+        print(f"\n📐 PASO 3: CÁLCULO DEL SCORE DE DISPONIBILIDAD")
+        print(f"   Fórmula:")
+        print(f"      disponibilidad = (accesibilidad + actualidad) / 2")
+        
+        print(f"\n   Sustituyendo valores:")
+        print(f"      disponibilidad = ({accesibilidad:.4f} + {actualidad:.4f}) / 2")
+        
+        disponibilidad = (accesibilidad + actualidad) / 2
+        print(f"      disponibilidad = {disponibilidad:.4f}")
+        
+        # Limitar al rango [0, 10]
+        disponibilidad = max(0, min(10, disponibilidad))
+        
+        # ===== INTERPRETACIÓN =====
+        print(f"\n📊 INTERPRETACIÓN DEL RESULTADO:")
+        if disponibilidad >= 9.0:
+            print(f"   ✅ EXCELENTE ({disponibilidad:.2f}/10): Dataset siempre listo y accesible")
+        elif disponibilidad >= 7.0:
+            print(f"   ✔️  BUENO ({disponibilidad:.2f}/10): Dataset generalmente disponible")
+        elif disponibilidad >= 5.0:
+            print(f"   ⚠️  ACEPTABLE ({disponibilidad:.2f}/10): Disponibilidad parcial")
+        elif disponibilidad >= 3.0:
+            print(f"   ❌ DEFICIENTE ({disponibilidad:.2f}/10): Disponibilidad limitada")
+        else:
+            print(f"   ❌ CRÍTICO ({disponibilidad:.2f}/10): Dataset prácticamente no disponible")
+        
+        print(f"\n" + "="*70)
+        print(f"🎯 RESULTADO FINAL DE DISPONIBILIDAD: {disponibilidad:.4f}/10")
+        print("="*70 + "\n")
+        
+        return float(disponibilidad)
 
     def calculate_all_scores(self) -> Dict[str, float]:
         return {
