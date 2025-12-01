@@ -40,10 +40,18 @@ DEFAULT_RECORDS_LIMIT = int(os.getenv("DEFAULT_RECORDS_LIMIT", 50000))
 TIMEOUT_REQUEST = int(os.getenv("TIMEOUT_REQUEST", 30))
 
 # CORS Configuration
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+# Por seguridad configurable vía variables de entorno. Por defecto permitir sólo el dominio
+# de producción `https://datacensus.site` en lugar de `*`.
+_raw_origins = os.getenv("CORS_ORIGINS", "https://datacensus.site")
+CORS_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 CORS_CREDENTIALS = os.getenv("CORS_CREDENTIALS", "true").lower() == "true"
-CORS_METHODS = os.getenv("CORS_METHODS", "*").split(",")
-CORS_HEADERS = os.getenv("CORS_HEADERS", "*").split(",")
+
+# Métodos y headers aceptan wildcard `*` o lista separada por comas
+_raw_methods = os.getenv("CORS_METHODS", "*")
+CORS_METHODS = [m.strip() for m in _raw_methods.split(",") if m.strip()] if _raw_methods != "*" else ["*"]
+_raw_headers = os.getenv("CORS_HEADERS", "*")
+CORS_HEADERS = [h.strip() for h in _raw_headers.split(",") if h.strip()] if _raw_headers != "*" else ["*"]
 
 app = FastAPI(title="Data Quality Assessment API")
 

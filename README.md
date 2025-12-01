@@ -42,7 +42,9 @@ DEFAULT_RECORDS_LIMIT=50000    # Máximo de registros a cargar
 TIMEOUT_REQUEST=30              # Timeout en segundos
 
 # CORS
-CORS_ORIGINS=*
+# RECOMENDADO en producción: especificar dominios conocidos en lugar de `*`.
+# Por defecto de ejemplo apuntamos a `https://datacensus.site`.
+CORS_ORIGINS=https://datacensus.site
 CORS_CREDENTIALS=true
 CORS_METHODS=*
 CORS_HEADERS=*
