@@ -1,7 +1,15 @@
 import requests
 import json
+import os
+from dotenv import load_dotenv
 
-base_url = "http://localhost:8000"
+# Load environment variables
+load_dotenv()
+
+# Get API configuration
+API_HOST = os.getenv("HOST", "localhost")
+API_PORT = os.getenv("PORT", "8001")
+base_url = f"http://{API_HOST}:{API_PORT}"
 
 dataset_request = {
     "dataset_url": "https://api.example.com/data.json",

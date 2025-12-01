@@ -8,17 +8,51 @@ from sodapy import Socrata
 import json
 import pandas as pd
 from datetime import datetime
+import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde .env
+load_dotenv()
 
 from data_quality_calculator import DataQualityCalculator
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN DESDE VARIABLES DE ENTORNO
+# ═══════════════════════════════════════════════════════════════════════════
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", 8001))
+ENV = os.getenv("ENV", "development")
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
+
+# Socrata Configuration
+SOCRATA_DOMAIN = os.getenv("SOCRATA_DOMAIN", "www.datos.gov.co")
+SOCRATA_API_KEY = os.getenv("SOCRATA_API_KEY", "")
+SOCRATA_USERNAME = os.getenv("SOCRATA_USERNAME", "")
+SOCRATA_PASSWORD = os.getenv("SOCRATA_PASSWORD", "")
+
+# URLs
+SOCRATA_BASE_URL = os.getenv("SOCRATA_BASE_URL", "https://www.datos.gov.co")
+SOCRATA_API_ENDPOINT = os.getenv("SOCRATA_API_ENDPOINT", "/api/views")
+SOCRATA_RESOURCE_ENDPOINT = os.getenv("SOCRATA_RESOURCE_ENDPOINT", "/resource")
+
+# Data Configuration
+DEFAULT_RECORDS_LIMIT = int(os.getenv("DEFAULT_RECORDS_LIMIT", 50000))
+TIMEOUT_REQUEST = int(os.getenv("TIMEOUT_REQUEST", 30))
+
+# CORS Configuration
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+CORS_CREDENTIALS = os.getenv("CORS_CREDENTIALS", "true").lower() == "true"
+CORS_METHODS = os.getenv("CORS_METHODS", "*").split(",")
+CORS_HEADERS = os.getenv("CORS_HEADERS", "*").split(",")
 
 app = FastAPI(title="Data Quality Assessment API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS if isinstance(CORS_ORIGINS, list) else [CORS_ORIGINS],
+    allow_credentials=CORS_CREDENTIALS,
+    allow_methods=CORS_METHODS if isinstance(CORS_METHODS, list) else [CORS_METHODS],
+    allow_headers=CORS_HEADERS if isinstance(CORS_HEADERS, list) else [CORS_HEADERS],
 )
 
 calculator = None
@@ -46,11 +80,11 @@ class DatasetInfoResponse(BaseModel):
 
 def obtener_metadatos_socrata(dataset_id: str) -> Dict:
     """Obtiene metadatos desde la API de Socrata"""
-    metadata_url = f"https://www.datos.gov.co/api/views/{dataset_id}"
+    metadata_url = f"{SOCRATA_BASE_URL}{SOCRATA_API_ENDPOINT}/{dataset_id}"
     print(f"🔍 Obteniendo metadatos desde: {metadata_url}")
     
     try:
-        response = requests.get(metadata_url)
+        response = requests.get(metadata_url, timeout=TIMEOUT_REQUEST)
         if response.status_code == 200:
             metadata = response.json()
             print("✅ Metadatos obtenidos exitosamente")
@@ -62,18 +96,21 @@ def obtener_metadatos_socrata(dataset_id: str) -> Dict:
         print(f"❌ Excepción al obtener metadatos: {e}")
         return {}
 
-def obtener_todos_los_datos_socrata(dataset_id: str, limit: int = 50000) -> pd.DataFrame:
+def obtener_todos_los_datos_socrata(dataset_id: str, limit: int = None) -> pd.DataFrame:
     """Obtiene todos los datos del dataset usando paginación"""
+    if limit is None:
+        limit = DEFAULT_RECORDS_LIMIT
+    
     # Use sodapy Socrata client for faster and robust retrieval
     print(f"🔗 Obteniendo datos (sodapy) para dataset: {dataset_id}")
     print(f"📦 Límite configurado: {limit} registros")
     try:
-        # You can override credentials via env variables if desired
+        # Credentials from environment variables
         client = Socrata(
-            "www.datos.gov.co",
-            "sAmoC9S1twqLnpX9YUmmSTqgp",
-            username="valen@yopmail.com",
-            password="p4wHD7Y.SDGiQmP",
+            SOCRATA_DOMAIN,
+            SOCRATA_API_KEY,
+            username=SOCRATA_USERNAME,
+            password=SOCRATA_PASSWORD,
         )
 
         results = client.get(dataset_id, limit=limit)
@@ -146,7 +183,7 @@ async def initialize_dataset(request: DatasetRequest) -> DatasetInfoResponse:
             dataset_name=metadata.get('name', 'Desconocido'),
             rows=rows,
             columns=columns,
-            data_url=f"https://www.datos.gov.co/resource/{dataset_id}.json",
+            data_url=f"{SOCRATA_BASE_URL}{SOCRATA_RESOURCE_ENDPOINT}/{dataset_id}.json",
             metadata_obtained=bool(metadata),
             records_count=records_count,
             total_records_available=records_count,
@@ -167,14 +204,14 @@ async def load_full_data() -> DatasetInfoResponse:
         await calculator.load_data()
         rows = len(calculator.df)
         columns = len(calculator.df.columns)
-        limit_reached = rows >= 50000
+        limit_reached = rows >= DEFAULT_RECORDS_LIMIT
         return DatasetInfoResponse(
             message="Full data loaded successfully",
             dataset_id=calculator.dataset_id,
             dataset_name=calculator.metadata.get('name', 'Desconocido'),
             rows=rows,
             columns=columns,
-            data_url=f"https://www.datos.gov.co/resource/{calculator.dataset_id}.json",
+            data_url=f"{SOCRATA_BASE_URL}{SOCRATA_RESOURCE_ENDPOINT}/{calculator.dataset_id}.json",
             metadata_obtained=bool(calculator.metadata),
             records_count=rows,
             total_records_available=rows,
@@ -488,15 +525,20 @@ async def get_completitud(dataset_id: Optional[str] = None) -> ScoreResponse:
 
 @app.get("/conformidad")
 async def get_conformidad(dataset_id: Optional[str] = None) -> ScoreResponse:
-    """Calcula la métrica de Conformidad avanzada (0-1) usando metadata y datos.
+    """Calcula la métrica de Conformidad mejorada usando metadata y datos.
 
-    - Soporta `dataset_id` on-demand (se obtienen metadatos si no existe calculator inicializado)
-    - Si se detectan columnas relevantes y no hay datos cargados, intenta cargar un muestreo (limit 5000)
-    - Retorna score entre 0-1. Si no hay columnas relevantes o no hay datos válidos, retorna score=0 y detalles.
+    Reglas:
+    - Si NO se detectan columnas relevantes (departamento, municipio, año, latitud, longitud, correo): Score = 10.0
+    - Si se detectan columnas pero no hay datos cargados: Intenta cargar una muestra (5000 registros)
+    - Si hay columnas y datos: Valida valores según reglas y retorna score basado en proporción de errores
+    
+    Score:
+    - 10.0: Sin columnas para validar (máximo) o datos completamente válidos
+    - 0.0: Todos los datos son inválidos (mínimo)
     """
     metadata_to_use = None
 
-    # Determine metadata source (fallback like /unicidad)
+    # Determine metadata source
     if dataset_id is None:
         if calculator is None:
             raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first or provide dataset_id")
@@ -536,15 +578,11 @@ async def get_conformidad(dataset_id: Optional[str] = None) -> ScoreResponse:
 
         score = use_calc.calculate_conformidad_from_metadata_and_data(metadata_to_use, verbose=True)
 
-        if score is None:
-            details = {'message': 'No relevant columns detected or no valid data to validate.'}
-            return ScoreResponse(score=0.0, details=details)
-
         # Build details from cache if available
         cached = getattr(use_calc, 'cached_scores', {}).get('conformidad_advanced')
         details = cached['details'] if cached else None
 
-        return ScoreResponse(score=round(float(score), 4), details=details)
+        return ScoreResponse(score=round(float(score), 2), details=details)
     except Exception as e:
         print(f"❌ Error calculando conformidad: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -673,6 +711,170 @@ async def get_disponibilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/trazabilidad")
+async def get_trazabilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Trazabilidad del dataset (usa metadatos).
+
+    REQUIERE metadatos. Si el `calculator` inicializado coincide con el
+    `dataset_id`, se usa; si no, se obtienen metadatos on-demand.
+    """
+    metadata_to_use = None
+
+    if dataset_id is None:
+        if calculator is None:
+            raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first or provide dataset_id")
+        dataset_id = calculator.dataset_id
+        metadata_to_use = calculator.metadata
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator is not None and calculator.dataset_id == dataset_id:
+            metadata_to_use = calculator.metadata
+        else:
+            print(f"ℹ️ Obteniendo metadatos en línea para dataset_id={dataset_id}")
+            fetched = obtener_metadatos_socrata(dataset_id)
+            if not fetched:
+                raise HTTPException(status_code=404, detail=f"Metadata not found for dataset_id={dataset_id}")
+            metadata_to_use = fetched
+
+    try:
+        print(f"📊 Calculando trazabilidad para dataset: {dataset_id}")
+        print("🛈 Metadata usada:")
+        try:
+            print(json.dumps(metadata_to_use, indent=2, ensure_ascii=False))
+        except Exception:
+            print(metadata_to_use)
+
+        # Usar calculator existente si coincide, sino crear temporal
+        if calculator is not None and calculator.dataset_id == dataset_id:
+            score = calculator.calculate_trazabilidad(metadata_to_use)
+        else:
+            temp_calc = DataQualityCalculator(dataset_id, metadata_to_use)
+            score = temp_calc.calculate_trazabilidad(metadata_to_use)
+
+        print(f"📈 Métrica de Trazabilidad calculada: {score}")
+        return ScoreResponse(score=round(float(score), 2))
+    except Exception as e:
+        print(f"❌ Error calculando trazabilidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/recuperabilidad")
+async def get_recuperabilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Recuperabilidad del dataset según la Guía de Calidad v7/v8.
+    
+    Fórmula: recuperabilidad = (accesibilidad + medidaMetadatosCompletos + metadatosAuditados) / 3
+    """
+    if calculator is None:
+        raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first.")
+
+    # Backwards-compatible behavior
+    if dataset_id is None:
+        dataset_id = calculator.dataset_id
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator.dataset_id != dataset_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset mismatch. Initialized: {calculator.dataset_id}, Requested: {dataset_id}"
+            )
+
+    # Validar que los datos estén cargados
+    if calculator.df is None or len(calculator.df) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Full data not loaded. Call POST /load_data first to fetch dataset records."
+        )
+
+    try:
+        print(f"📊 Calculando recuperabilidad para dataset: {dataset_id}")
+        
+        # 1. Obtener accesibilidad usando el método existente
+        accesibilidad_score = calculator.calculate_accesibilidad_from_metadata(verbose=False)
+        # Normalizar a escala 0-1 (tu método retorna 0-10)
+        accesibilidad_normalized = accesibilidad_score / 10.0
+        print(f"  - Accesibilidad: {accesibilidad_score}/10 → {accesibilidad_normalized:.2f}")
+        
+        # 2. Calcular medidaMetadatosCompletos
+        metadatos_completos_score = calculator.calculate_metadatos_completos()
+        print(f"  - Metadatos Completos: {metadatos_completos_score:.2f}")
+        
+        # 3. Calcular metadatosAuditados
+        metadatos_auditados_score = calculator.calculate_metadatos_auditados()
+        print(f"  - Metadatos Auditados: {metadatos_auditados_score:.2f}")
+        
+        # 4. Calcular recuperabilidad según fórmula (todas en escala 0-1)
+        recuperabilidad_score = (
+            accesibilidad_normalized + 
+            metadatos_completos_score + 
+            metadatos_auditados_score
+        ) / 3.0
+        
+        # Convertir a escala 0-10 para consistencia con otras métricas
+        recuperabilidad_final = recuperabilidad_score * 10.0
+        
+        print(f"📈 Métrica de Recuperabilidad calculada: {recuperabilidad_final:.2f}/10")
+        
+        return ScoreResponse(
+            score=round(float(recuperabilidad_final), 2),
+            details={
+                "componentes": {
+                    "accesibilidad": round(float(accesibilidad_score), 2),
+                    "accesibilidad_normalized": round(float(accesibilidad_normalized), 2),
+                    "metadatos_completos": round(float(metadatos_completos_score), 2),
+                    "metadatos_auditados": round(float(metadatos_auditados_score), 2)
+                },
+                "formula": "recuperabilidad = (accesibilidad + metadatos_completos + metadatos_auditados) / 3",
+                "escala": "0-10"
+            }
+        )
+    except Exception as e:
+        print(f"❌ Error calculando recuperabilidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/credibilidad")
+async def get_credibilidad(dataset_id: Optional[str] = None) -> ScoreResponse:
+    """Calcula la métrica de Credibilidad del dataset.
+
+    REQUIERE que los datos estén cargados via POST /load_data.
+    """
+    if calculator is None:
+        raise HTTPException(status_code=400, detail="Dataset not initialized. Call /initialize first.")
+
+    # Backwards-compatible behavior: if dataset_id not provided, use initialized dataset_id
+    if dataset_id is None:
+        dataset_id = calculator.dataset_id
+        print("⚠️ Warning: dataset_id not provided in request; using initialized dataset_id")
+    else:
+        if calculator.dataset_id != dataset_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset mismatch. Initialized: {calculator.dataset_id}, Requested: {dataset_id}"
+            )
+
+    # Validar que los datos estén cargados
+    if calculator.df is None or len(calculator.df) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Full data not loaded. Call POST /load_data first to fetch dataset records."
+        )
+
+    try:
+        print(f"📊 Calculando credibilidad para dataset: {dataset_id}")
+        print("🛈 Metadata usada:")
+        try:
+            print(json.dumps(calculator.metadata, indent=2, ensure_ascii=False))
+        except Exception:
+            print(calculator.metadata)
+
+        # Llamar a la función
+        score = calculator.calculate_credibilidad()
+
+        print(f"📈 Métrica de Credibilidad calculada: {score}")
+        return ScoreResponse(score=round(float(score), 2))
+    except Exception as e:
+        print(f"❌ Error calculando credibilidad: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/unicidad")
 async def get_unicidad(dataset_id: Optional[str] = None, nivel_riesgo: Optional[float] = 1.5) -> ScoreResponse:
     """Calcula la métrica de Unicidad del dataset (duplicados).
@@ -749,7 +951,9 @@ async def root():
     }
 
 if __name__ == "__main__":
-    print("🌐 Iniciando servidor Data Quality API en puerto 8001...")
+    print(f"🌐 Iniciando servidor Data Quality API en {HOST}:{PORT}...")
+    print(f"🔧 Ambiente: {ENV}")
+    print(f"🐛 Debug: {DEBUG}")
     print("📚 Características: Paginación habilitada para datasets grandes")
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host=HOST, port=PORT, reload=DEBUG)
   

@@ -3,8 +3,16 @@ Test de integración: Valida que el backend use consistentemente el dataset_id d
 """
 import requests
 import json
+import os
+from dotenv import load_dotenv
 
-BASE_URL = "http://localhost:8001"
+# Load environment variables
+load_dotenv()
+
+# Get API configuration
+API_HOST = os.getenv("HOST", "localhost")
+API_PORT = os.getenv("PORT", "8001")
+BASE_URL = f"http://{API_HOST}:{API_PORT}"
 DATASET_ID = "ijus-ubej"
 
 print("=" * 80)
