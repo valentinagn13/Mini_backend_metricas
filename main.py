@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Optional, Any, List
@@ -55,13 +55,47 @@ CORS_HEADERS = [h.strip() for h in _raw_headers.split(",") if h.strip()] if _raw
 
 app = FastAPI(title="Data Quality Assessment API")
 
+# Normalize CORS settings for CORSMiddleware
+# Si el origen contiene '*' y se requieren credenciales, usamos una regex
+# para permitir cualquier origin (incluye preflight OPTIONS) sin usar el wildcard
+# literal en allow_origins (que impide allow_credentials=True).
+_allow_origin_regex = None
+if len(CORS_ORIGINS) == 1 and CORS_ORIGINS[0] == "*":
+    if CORS_CREDENTIALS:
+        _allow_origins = []
+        _allow_origin_regex = r".*"
+    else:
+        _allow_origins = ["*"]
+else:
+    _allow_origins = CORS_ORIGINS
+
+# Métodos y headers finales (aceptan '*' como wildcard)
+_allow_methods = CORS_METHODS if not (len(CORS_METHODS) == 1 and CORS_METHODS[0] == "*") else ["*"]
+_allow_headers = CORS_HEADERS if not (len(CORS_HEADERS) == 1 and CORS_HEADERS[0] == "*") else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS if isinstance(CORS_ORIGINS, list) else [CORS_ORIGINS],
+    allow_origins=_allow_origins,
+    allow_origin_regex=_allow_origin_regex,
     allow_credentials=CORS_CREDENTIALS,
-    allow_methods=CORS_METHODS if isinstance(CORS_METHODS, list) else [CORS_METHODS],
-    allow_headers=CORS_HEADERS if isinstance(CORS_HEADERS, list) else [CORS_HEADERS],
+    allow_methods=_allow_methods,
+    allow_headers=_allow_headers,
 )
+
+
+# Fallback global handler for CORS preflight OPTIONS requests.
+# Devuelve 200 para cualquier ruta OPTIONS para que proxys/routers
+# que bloqueen OPTIONS no impidan que el navegador reciba una respuesta
+# válida de preflight. `CORSMiddleware` seguirá añadiendo las cabeceras CORS.
+@app.options("/{full_path:path}")
+async def _preflight_handler(full_path: str):
+    """Fallback handler for CORS preflight requests.
+
+    This returns 200 for any OPTIONS request so that browsers receive a
+    successful preflight response even if the router or a proxy blocks
+    OPTIONS. CORSMiddleware will still add the appropriate CORS headers.
+    """
+    return Response(status_code=200)
 
 calculator = None
 
